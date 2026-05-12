@@ -33,7 +33,12 @@ public class CheckHost {
 
     public CheckHost(String apiKey) {
         this.apiKey = apiKey;
+        // Force HTTP/1.1: the Java HttpClient's HTTP/2 transport tends
+        // to negotiate brotli with the CDN edge, which we cannot
+        // transparently decompress. Sticking to HTTP/1.1 keeps the
+        // server in plain / gzip territory.
         this.httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
         this.mapper = new ObjectMapper();
@@ -183,7 +188,10 @@ public class CheckHost {
                 // java.net.http.HttpClient does not transparently decompress
                 // gzip/br responses; ask the server for an identity body so
                 // we can hand it straight to Jackson.
-                .header("Accept-Encoding", "identity")
+                // Ask for gzip explicitly (so the CDN doesn't fall back
+                // to brotli which java.net.http won't decode); inflate
+                // ourselves in execute().
+                .header("Accept-Encoding", "gzip")
                 .GET()
                 .build();
         return execute(request, responseType);
@@ -196,7 +204,10 @@ public class CheckHost {
                     .uri(URI.create(BASE_URL + endpoint))
                     .header("Content-Type", "application/json")
                     .header("Accept", "application/json")
-                    .header("Accept-Encoding", "identity")
+                    // Ask for gzip explicitly (so the CDN doesn't fall back
+                // to brotli which java.net.http won't decode); inflate
+                // ourselves in execute().
+                .header("Accept-Encoding", "gzip")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
                     .build();
             return execute(request, responseType);
@@ -216,7 +227,10 @@ public class CheckHost {
                 .header("Accept", accept)
                 // Disable transparent decompression so the byte stream
                 // matches the wire content exactly.
-                .header("Accept-Encoding", "identity")
+                // Ask for gzip explicitly (so the CDN doesn't fall back
+                // to brotli which java.net.http won't decode); inflate
+                // ourselves in execute().
+                .header("Accept-Encoding", "gzip")
                 .GET()
                 .build();
         try {
