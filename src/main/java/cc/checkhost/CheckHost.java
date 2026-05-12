@@ -6,14 +6,17 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.zip.GZIPInputStream;
 
 /**
  * Check-Host API Wrapper Client
@@ -233,12 +236,31 @@ public class CheckHost {
 
     private <T> T execute(HttpRequest request, Class<T> responseType) {
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            String body = response.body();
+            // Read as raw bytes so we can transparently inflate gzip
+            // responses. The Check-Host edge compresses large JSON
+            // bodies (notably /locations) regardless of the
+            // Accept-Encoding request header, so relying on
+            // BodyHandlers.ofString here would surface garbled bytes
+            // to Jackson.
+            HttpResponse<byte[]> raw = httpClient.send(
+                    request, HttpResponse.BodyHandlers.ofByteArray()
+            );
+            byte[] rawBody = raw.body();
+            int status = raw.statusCode();
+            if (rawBody != null && rawBody.length >= 2
+                    && (rawBody[0] & 0xFF) == 0x1F
+                    && (rawBody[1] & 0xFF) == 0x8B) {
+                try (GZIPInputStream gz = new GZIPInputStream(
+                        new ByteArrayInputStream(rawBody))) {
+                    rawBody = gz.readAllBytes();
+                }
+            }
+            String body = rawBody == null
+                    ? ""
+                    : new String(rawBody, StandardCharsets.UTF_8);
 
-            if (response.statusCode() >= 400) {
-                // Try to extract an error message if possible
-                String errorMsg = "API Error: " + response.statusCode();
+            if (status >= 400) {
+                String errorMsg = "API Error: " + status;
                 try {
                     JsonNode errorNode = mapper.readTree(body);
                     if (errorNode.has("error")) {
@@ -249,15 +271,15 @@ public class CheckHost {
                 } catch (Exception ignored) {
                     errorMsg += " - " + body;
                 }
-                throw new CheckHostException(errorMsg, response.statusCode());
+                throw new CheckHostException(errorMsg, status);
             }
 
             if (responseType == String.class) {
                 return responseType.cast(body);
             }
             return mapper.readValue(body, responseType);
-
         } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
             throw new CheckHostException("HTTP Request failed: " + e.getMessage(), e);
         }
     }
