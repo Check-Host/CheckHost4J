@@ -15,14 +15,22 @@ public class CheckHostTest {
 
     @BeforeEach
     public void setUp() {
-        // Initialize client without API key for tests
-        checkHost = new CheckHost();
+        // CI populates CHECK_HOST_API_KEY via a masked GitLab variable so
+        // pipelines pick up the higher per-key rate limit. Locally and
+        // when the env var is empty we keep the anonymous tier.
+        String apiKey = System.getenv("CHECK_HOST_API_KEY");
+        checkHost = (apiKey != null && !apiKey.isEmpty())
+                ? new CheckHost(apiKey)
+                : new CheckHost();
     }
 
     private void sleepToAvoidRateLimit() {
         try {
-            // API without key requires slow execution
-            Thread.sleep(5000);
+            // With an API key the per-IP bucket is more generous; without
+            // it the API requires slower execution between checks.
+            long ms = (System.getenv("CHECK_HOST_API_KEY") == null
+                    || System.getenv("CHECK_HOST_API_KEY").isEmpty()) ? 5000L : 2000L;
+            Thread.sleep(ms);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
