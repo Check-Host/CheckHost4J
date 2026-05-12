@@ -1,6 +1,6 @@
 # CheckHost4J
 
-A lightweight, lightning-fast, and feature-complete Java 17+ wrapper for the [Check-Host.cc](https://check-host.cc) API. Full documentation is available at [docs.check-host.cc](https://docs.check-host.cc).
+A lightweight, lightning-fast, and feature-complete Java 17+ wrapper for the [Check-Host.cc](https://check-host.cc) API. Full API reference: [check-host.cc/docs](https://check-host.cc/docs). A bundled OpenAPI 3.0.3 / Swagger spec ships at [`swagger.yaml`](./swagger.yaml) for codegen / offline browsing.
 
 Seamlessly integrate global network diagnostics into your backend. Perform remote Ping, MTR, DNS, HTTP, TCP and UDP checks from multiple worldwide locations—straight from your Java application. Checks from 60+ locations worldwide.
 
