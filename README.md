@@ -2,7 +2,7 @@
 
 A lightweight, lightning-fast, and feature-complete Java 17+ wrapper for the [Check-Host.cc](https://check-host.cc) API. Full documentation is available at [docs.check-host.cc](https://docs.check-host.cc).
 
-Seamlessly integrate global network diagnostics into your backend. Perform remote Ping, TCP, UDP, DNS, and HTTP checks from multiple worldwide locations—straight from your Java application. Checks from 60+ locations worldwide.
+Seamlessly integrate global network diagnostics into your backend. Perform remote Ping, MTR, DNS, HTTP, TCP and UDP checks from multiple worldwide locations—straight from your Java application. Checks from 60+ locations worldwide.
 
 ## Features
 

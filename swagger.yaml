@@ -1,0 +1,1315 @@
+openapi: 3.0.3
+info:
+  title: Check-Host.cc API
+  version: 2.0.0
+  description: |
+    The Check-Host.cc API runs distributed network diagnostics from 50+ global nodes — Ping, MTR, DNS, HTTP, TCP and UDP — and exposes IP/host metadata, WHOIS, and historic check reports.
+
+    ## How a check works
+
+    Submitting a check is asynchronous:
+
+    1. `POST /ping`, `/tcp`, `/udp`, `/http`, `/dns`, `/mtr` (or the equivalent GET shortcuts) — returns a UUID and a `reportURL`.
+    2. Poll `GET /report/{uuid}` until each requested node has reported a result. Most checks complete in 1–10 seconds.
+
+    ## Authentication
+
+    Anonymous use is permitted with conservative per-IP and per-target rate limits. To raise those limits and to gain a per-key monthly quota, pass an `apikey` (UUID format) in the request body. Public endpoints accept the field as `null`.
+
+    ## Rate limits
+
+    Limits are applied per-IP, per-API-key, and per-target globally to prevent abuse. Exceeding any bucket returns `429`. Live-mode checks (`repeatchecks > 9`) consume a smaller, separate budget.
+
+    ## Official SDKs
+
+    | Language | Repository |
+    |---|---|
+    | Node.js  | <https://github.com/Check-Host/nodejs-lib>  |
+    | Python   | <https://github.com/Check-Host/python-lib>  |
+    | PHP 8.1+ | <https://github.com/Check-Host/php-lib>     |
+    | Go       | <https://github.com/Check-Host/go-lib>      |
+    | Java     | <https://github.com/Check-Host/CheckHost4J> |
+
+    All SDKs and tooling: <https://github.com/Check-Host>
+
+    ## Quick example — polling pattern
+
+    ```bash
+    # 1. Dispatch a check, capture the UUID
+    UUID=$(curl -s -X POST https://api.check-host.cc/ping \
+      -H 'Content-Type: application/json' \
+      -d '{"target":"check-host.cc","region":["DE"]}' | jq -r .uuid)
+
+    # 2. Poll the report until every node has reported
+    until curl -s "https://api.check-host.cc/report/$UUID" \
+      | jq -e '.data | length >= 1' > /dev/null; do sleep 1; done
+    curl -s "https://api.check-host.cc/report/$UUID" | jq .
+    ```
+  contact:
+    name: Check-Host API Support
+    url: https://check-host.cc
+    email: dev@check-host.cc
+  license:
+    name: Proprietary — free public use
+    url: https://check-host.cc/about
+  x-logo:
+    url: https://check-host.cc/images/Check-Host-Logo-LightMode.png
+    altText: Check-Host.cc
+
+externalDocs:
+  description: Official SDKs (Node.js, Python, PHP, Go, Java) on GitHub
+  url: https://github.com/Check-Host
+
+# ReDoc-only: groups the sidebar tags into top-level sections.
+# Ignored by Swagger UI and other tools.
+x-tagGroups:
+  - name: Submit a check
+    tags: [Monitoring]
+  - name: Read results
+    tags: [Reporting]
+  - name: Lookups
+    tags: [Utilities]
+
+servers:
+  - url: https://api.check-host.cc
+    description: Production
+  - url: https://check-host.cc/api
+    description: Mirror (same backend, useful if api.* is blocked by the network)
+
+tags:
+  - name: Utilities
+    description: IP geolocation, WHOIS, the requesting client's IP, and the live monitoring node list.
+  - name: Monitoring
+    description: Dispatch a Ping / TCP / UDP / HTTP / DNS / MTR check to global nodes. Returns a UUID — poll `/report/{uuid}` for results.
+    externalDocs:
+      description: "Example: dispatching a Ping check via the official SDKs"
+      url: https://github.com/Check-Host
+  - name: Reporting
+    description: Fetch the JSON report, the dynamic OG image, or the country-coloured world map for a previously dispatched check.
+
+paths:
+  # ─────────────────────────────  Utilities  ─────────────────────────────
+
+  /myip:
+    get:
+      tags: [Utilities]
+      operationId: getMyIp
+      summary: Get caller's public IP
+      description: Returns the requesting client's public IPv4 or IPv6 address. Useful for client-side identification before dispatching authenticated requests.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyIpResponse'
+              example:
+                status: 200
+                message: "Your current IP is: 45.95.55.230"
+                ip: "45.95.55.230"
+                success: true
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /myinfo:
+    get:
+      tags: [Utilities]
+      operationId: getMyInfo
+      summary: Geolocation + ASN for the caller's IP
+      description: Same response shape as `/info/{target}` but resolved against the requesting client's IP. Subject to bot detection — repeated cache misses on this endpoint can result in a `429` with a captcha verification URL.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InfoResponse'
+        '429':
+          description: Rate-limited or flagged by bot detection. Response body includes a captcha URL when bot-flagged.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:     { type: boolean, example: false }
+                  error:       { type: string }
+                  captcha_url: { type: string, format: uri, nullable: true }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /locations:
+    get:
+      tags: [Utilities]
+      operationId: listLocations
+      summary: List all active monitoring nodes
+      description: |
+        Returns every node currently online. Use the `locationname` value (e.g. `DE-NBG-Hetzner`) in the `region` array of any monitoring request to target a specific node, or the `countryCode` (e.g. `DE`) to fan out across all nodes in a country, or a continent code (`EU`, `NA`, `AS`, `SA`, `AF`, `OC`).
+
+        Continental targeting cannot be mixed with specific node names in the same request.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationsResponse'
+              example:
+                status: 200
+                CountryCodes: "Only supported where Locations are! Take from locationlist"
+                Continents: ["EU"]
+                locationlist:
+                  - { continent: "EU", country: "Germany", countryCode: "DE", city: "Nuernberg", asn: "AS24940", isp: "Hetzner Online GmbH", datacenter: "Hetzner", monitoring_allowed: 1, hostname: "de-nbg-het.check-host.eu", locationname: "DE-NBG-Hetzner", sponsor: null, sponsor_url: null, latitude: null, longitude: null }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /info:
+    post:
+      tags: [Utilities]
+      operationId: infoLookup
+      summary: Geolocation + ASN (POST)
+      description: Recommended over GET when the target may need URL-encoding.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TargetRequest' }
+            example: { apikey: null, target: "check-host.cc" }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InfoResponse' }
+              examples:
+                checkHost:
+                  $ref: '#/components/examples/InfoCheckHost'
+        '400':
+          description: Missing or invalid target.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example: { status: 400, error: "No target provided", success: false }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /info/{target}:
+    get:
+      tags: [Utilities]
+      operationId: infoLookupByPath
+      summary: Geolocation + ASN (GET)
+      description: GET shortcut. Use POST `/info` for targets that contain reserved URL characters.
+      parameters:
+        - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InfoResponse' }
+              examples:
+                checkHost:
+                  $ref: '#/components/examples/InfoCheckHost'
+        '400':
+          description: Invalid target.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /infoforce/{target}:
+    get:
+      tags: [Utilities]
+      operationId: infoForceFresh
+      summary: Force a fresh geolocation lookup (cache bypass)
+      description: Identical response to `/info/{target}` but skips the local 90-day geo cache and re-queries upstream providers. Use sparingly — counts against external API quota.
+      parameters:
+        - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InfoResponse' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /whois:
+    post:
+      tags: [Utilities]
+      operationId: whoisLookup
+      summary: WHOIS / RDAP lookup (POST)
+      description: Returns the upstream RDAP record for a domain or IP block (registrant, registrar, dates, nameservers, abuse contact).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TargetRequest' }
+            example: { apikey: null, target: "check-host.cc" }
+      responses:
+        '200':
+          description: OK — RDAP record. Shape varies by registry; the example below is from Verisign for a `.cc` domain.
+          content:
+            application/json:
+              example:
+                objectClassName: "domain"
+                handle: "167044666_DOMAIN_CC-VRSN"
+                ldhName: "CHECK-HOST.CC"
+                status: ["client delete prohibited", "client transfer prohibited"]
+                events:
+                  - { eventAction: "registration",  eventDate: "2021-11-20T20:21:05Z" }
+                  - { eventAction: "expiration",    eventDate: "2030-11-20T20:21:05Z" }
+                  - { eventAction: "last changed",  eventDate: "2026-01-13T13:54:30Z" }
+                nameservers:
+                  - { objectClassName: "nameserver", ldhName: "PEYTON.NS.CLOUDFLARE.COM" }
+                secureDNS: { delegationSigned: false }
+        '400': { $ref: '#/components/responses/BadInput' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /whois/{target}:
+    get:
+      tags: [Utilities]
+      operationId: whoisLookupByPath
+      summary: WHOIS / RDAP lookup (GET)
+      parameters:
+        - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
+      responses:
+        '200':
+          description: OK — RDAP record (shape varies by registry).
+        '400': { $ref: '#/components/responses/BadInput' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  # ─────────────────────────────  Monitoring  ─────────────────────────────
+
+  /ping:
+    post:
+      tags: [Monitoring]
+      operationId: checkPing
+      summary: ICMP Ping
+      description: Dispatches ICMP echo requests from each selected node to measure latency and packet loss. Set `repeatchecks` ≥ 10 for live mode (continuous probing for ~`repeatchecks` seconds).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MonitoringRequest' }
+            example: { apikey: null, target: "check-host.cc", region: ["DE"], repeatchecks: 0 }
+      responses:
+        '200':
+          description: Check dispatched.
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckCreated' }
+              example:
+                status: 200
+                success: true
+                target: "check-host.cc"
+                method: "ping"
+                repeatchecks: 0
+                region: ["DE"]
+                uuid: "0710831d-1589-47d4-9fc1-885fe33a25e4"
+                reportURL: "https://check-host.cc/report/0710831d-1589-47d4-9fc1-885fe33a25e4"
+                apiURL: "https://api.check-host.cc/report/0710831d-1589-47d4-9fc1-885fe33a25e4"
+                og-imageURL: "https://api.check-host.cc/report/0710831d-1589-47d4-9fc1-885fe33a25e4/og-image"
+                autodelete: "12-05-2036"
+                message: "Broadcasted task to all slaves."
+                port: null
+                query: null
+                payload: null
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /ping/{target}:
+    get:
+      tags: [Monitoring]
+      operationId: checkPingByPath
+      summary: ICMP Ping (GET)
+      parameters:
+        - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
+      responses:
+        '200':
+          description: Check dispatched.
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckCreated' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /tcp:
+    post:
+      tags: [Monitoring]
+      operationId: checkTcp
+      summary: TCP port check
+      description: |
+        Attempts a TCP 3-way handshake on `target:port`. Good for verifying firewall rules and service availability.
+
+        **Live mode:** set `repeatchecks` ≥ 10 for continuous probing — see the same note on `/ping`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/MonitoringRequest'
+                - type: object
+                  required: [port]
+                  properties:
+                    port: { type: integer, minimum: 1, maximum: 65535, example: 443 }
+            example: { apikey: null, target: "check-host.cc", port: 443, region: ["DE"] }
+      responses:
+        '200':
+          description: Check dispatched.
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckCreated' }
+              example:
+                status: 200
+                success: true
+                target: "check-host.cc:443"
+                method: "tcp"
+                repeatchecks: 0
+                region: ["DE"]
+                uuid: "98eea6c0-d270-4282-af22-d167ff549dd8"
+                reportURL: "https://check-host.cc/report/98eea6c0-d270-4282-af22-d167ff549dd8"
+                apiURL: "https://api.check-host.cc/report/98eea6c0-d270-4282-af22-d167ff549dd8"
+                og-imageURL: "https://api.check-host.cc/report/98eea6c0-d270-4282-af22-d167ff549dd8/og-image"
+                autodelete: "12-05-2036"
+                message: "Broadcasted task to all slaves."
+                port: 443
+                query: null
+                payload: null
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /tcp/{target}/{port}:
+    get:
+      tags: [Monitoring]
+      operationId: checkTcpByPath
+      summary: TCP port check (GET)
+      parameters:
+        - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
+        - { name: port,   in: path, required: true, schema: { type: integer, minimum: 0, maximum: 65535 }, example: 443 }
+      responses:
+        '200':
+          description: Check dispatched.
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckCreated' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /udp:
+    post:
+      tags: [Monitoring]
+      operationId: checkUdp
+      summary: UDP port check
+      description: |
+        UDP is connectionless, so meaningful availability often requires sending a protocol-specific payload. If `payload` is omitted, the server injects a sensible default for well-known ports (DNS, NTP, SNMP, RIP, OpenVPN, WireGuard, Quake, Minecraft, …) — see [`UdpPayloads.php`](https://github.com/Check-Host) in the project. For unknown ports, a generic probe is used.
+
+        `payload` accepts either a hex string (`0x…`) or printable ASCII (max 2048 bytes). It is sent verbatim by every selected node.
+
+        **Live mode:** set `repeatchecks` ≥ 10 for continuous probing — see the same note on `/ping`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/MonitoringRequest'
+                - type: object
+                  required: [port]
+                  properties:
+                    port:    { type: integer, minimum: 1, maximum: 65535, example: 53 }
+                    payload: { type: string, nullable: true, maxLength: 2048, example: "0x241a010000010000000000000377777706676f6f676c6503636f6d0000010001" }
+            example: { apikey: null, target: "1.1.1.1", port: 53, region: ["DE"] }
+      responses:
+        '200':
+          description: Check dispatched.
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckCreated' }
+              example:
+                status: 200
+                success: true
+                target: "1.1.1.1:53"
+                method: "udp"
+                repeatchecks: 0
+                region: ["DE"]
+                uuid: "b6c616c9-239d-45dd-8120-ccef70ea7927"
+                reportURL: "https://check-host.cc/report/b6c616c9-239d-45dd-8120-ccef70ea7927"
+                apiURL: "https://api.check-host.cc/report/b6c616c9-239d-45dd-8120-ccef70ea7927"
+                og-imageURL: "https://api.check-host.cc/report/b6c616c9-239d-45dd-8120-ccef70ea7927/og-image"
+                autodelete: "12-05-2036"
+                message: "Broadcasted task to all slaves."
+                port: 53
+                query: null
+                payload: "0x241a010000010000000000000377777706676f6f676c6503636f6d0000010001"
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    get:
+      tags: [Monitoring]
+      operationId: checkUdpByQuery
+      summary: UDP port check (GET, query string)
+      description: GET variant accepting `target` and `port` as query parameters. Equivalent to POST `/udp`.
+      parameters:
+        - { name: target,  in: query, required: true,  schema: { type: string }, example: "1.1.1.1" }
+        - { name: port,    in: query, required: true,  schema: { type: integer, minimum: 1, maximum: 65535 }, example: 53 }
+        - { name: region,  in: query, required: false, schema: { type: array, items: { type: string } } }
+        - { name: payload, in: query, required: false, schema: { type: string }, description: "Hex (0x…) or printable ASCII, max 2048 bytes." }
+      responses:
+        '200':
+          description: Check dispatched.
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckCreated' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /http:
+    post:
+      tags: [Monitoring]
+      operationId: checkHttp
+      summary: HTTP/HTTPS check
+      description: |
+        Issues an HTTP(S) GET to the target and records status code, status text, target IP, and connection time. Accepts a full URL (including scheme, port, path, query) or a bare host — when the scheme is omitted, `https` is assumed.
+
+        **Live mode:** set `repeatchecks` ≥ 10 to have each node issue `repeatchecks + 1` consecutive requests over ~`repeatchecks` seconds. The `checks` array in the report then contains one entry per probe (with `repeat: 0..N`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MonitoringRequest' }
+            example: { apikey: null, target: "https://check-host.cc", region: ["DE"] }
+      responses:
+        '200':
+          description: Check dispatched.
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckCreated' }
+              example:
+                status: 200
+                success: true
+                target: "https://check-host.cc"
+                method: "http"
+                repeatchecks: 0
+                region: ["DE"]
+                uuid: "2afce05a-a6d8-460c-83fc-0da441c376bc"
+                reportURL: "https://check-host.cc/report/2afce05a-a6d8-460c-83fc-0da441c376bc"
+                apiURL: "https://api.check-host.cc/report/2afce05a-a6d8-460c-83fc-0da441c376bc"
+                og-imageURL: "https://api.check-host.cc/report/2afce05a-a6d8-460c-83fc-0da441c376bc/og-image"
+                autodelete: "12-05-2036"
+                message: "Broadcasted task to all slaves."
+                port: null
+                query: null
+                payload: null
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /dns:
+    post:
+      tags: [Monitoring]
+      operationId: checkDns
+      summary: DNS record lookup / propagation check
+      description: Queries the named DNS record type from each selected node's local resolver. When `querymethod` is `PTR`, an IP address is allowed as the `target`; for any other method the `target` must be a domain.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DNSTargetRequest' }
+            example: { apikey: null, target: "check-host.cc", querymethod: "A", region: ["DE"] }
+      responses:
+        '200':
+          description: Check dispatched.
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckCreated' }
+              example:
+                status: 200
+                success: true
+                target: "check-host.cc"
+                method: "dns"
+                repeatchecks: 0
+                region: ["DE"]
+                uuid: "da7e9b71-8cd0-4818-9ba3-7e0e34e370b1"
+                reportURL: "https://check-host.cc/report/da7e9b71-8cd0-4818-9ba3-7e0e34e370b1"
+                apiURL: "https://api.check-host.cc/report/da7e9b71-8cd0-4818-9ba3-7e0e34e370b1"
+                og-imageURL: "https://api.check-host.cc/report/da7e9b71-8cd0-4818-9ba3-7e0e34e370b1/og-image"
+                autodelete: "12-05-2036"
+                message: "Broadcasted task to all slaves."
+                port: null
+                query: "A"
+                payload: null
+        '422':
+          description: Validation error (e.g. IP supplied with non-PTR method).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example: { status: 422, error: "Only domain names are allowed for DNS checks, or use PTR for IPs.", success: false }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /dns/{target}/{method}:
+    get:
+      tags: [Monitoring]
+      operationId: checkDnsByPath
+      summary: DNS record lookup (GET)
+      parameters:
+        - { name: target, in: path, required: true,  schema: { type: string }, example: "check-host.cc" }
+        - { name: method, in: path, required: false, schema: { type: string, default: "A", enum: [A/AAAA, A, AAAA, NS, MD, MF, CNAME, SOA, MB, MG, MR, "NULL", WKS, PTR, HINFO, MINFO, MX, TXT, SRV, EDNS, SPF, AXFR, MAILB, MAILA, ANY, CAA, DNSKEY] }, example: "A" }
+      responses:
+        '200':
+          description: Check dispatched.
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckCreated' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /mtr:
+    post:
+      tags: [Monitoring]
+      operationId: checkMtr
+      summary: MTR (My Traceroute)
+      description: |
+        Combines traceroute and ping for hop-by-hop network path analysis. Default protocol is ICMP — use `forceProtocol: udp` or `tcp` to bypass ICMP-blocking firewalls. Default 5 packets per hop; raise `repeatchecks` (3–30) for higher-confidence stats at the cost of longer completion time.
+
+        MTR results are larger than other check types — expect ~1–3 KB per hop per node.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MTRMonitoringRequest' }
+            example: { apikey: null, target: "check-host.cc", repeatchecks: 5, region: ["DE"] }
+      responses:
+        '200':
+          description: Check dispatched.
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckCreated' }
+              example:
+                status: 200
+                success: true
+                target: "check-host.cc"
+                method: "mtr"
+                repeatchecks: 5
+                region: ["DE"]
+                uuid: "bc7b2683-2bc5-4604-8130-ad70df7b1e64"
+                reportURL: "https://check-host.cc/report/bc7b2683-2bc5-4604-8130-ad70df7b1e64"
+                apiURL: "https://api.check-host.cc/report/bc7b2683-2bc5-4604-8130-ad70df7b1e64"
+                og-imageURL: "https://api.check-host.cc/report/bc7b2683-2bc5-4604-8130-ad70df7b1e64/og-image"
+                autodelete: "12-05-2036"
+                message: "Broadcasted task to all slaves."
+                port: null
+                query: null
+                payload: null
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /mtr/{target}:
+    get:
+      tags: [Monitoring]
+      operationId: checkMtrByPath
+      summary: MTR (GET)
+      parameters:
+        - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
+      responses:
+        '200':
+          description: Check dispatched.
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckCreated' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  # ─────────────────────────────  Reporting  ─────────────────────────────
+
+  /report/{uuid}:
+    get:
+      tags: [Reporting]
+      operationId: getReport
+      summary: Fetch check results
+      description: |
+        Returns the JSON report for a previously dispatched check. The `data` map is keyed by `locationname` (e.g. `DE-NBG-Hetzner`); each entry includes the node metadata and a `checks` field whose **shape depends on the check method**:
+
+        - `ping`, `tcp`, `udp`, `http` — `checks` is an **array** of probe results.
+        - `dns`, `mtr` — `checks` is a **single object** (DNS holds a record list, MTR holds a hop graph).
+
+        Nodes that haven't reported yet are omitted from `data`. Poll until every requested node appears.
+
+        ### Caching
+
+        Reports are immutable once every selected node has reported. The response sets `Cache-Control: no-store` for the first ~200 seconds (settling window for slow nodes), then flips to `public, max-age=31536000, s-maxage=31536000, immutable` — safe to cache aggressively at edge/CDN.
+      parameters:
+        - { name: uuid, in: path, required: true, schema: { type: string, format: uuid }, example: "0710831d-1589-47d4-9fc1-885fe33a25e4" }
+      responses:
+        '200':
+          description: Report (full or partial — poll until complete).
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: "`no-store` while collecting results, `public, max-age=31536000, immutable` once final."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckReport' }
+              examples:
+                ping:     { $ref: '#/components/examples/ReportPing' }
+                http:     { $ref: '#/components/examples/ReportHttp' }
+                httpLive: { $ref: '#/components/examples/ReportHttpLive' }
+                dns:      { $ref: '#/components/examples/ReportDns'  }
+                mtr:      { $ref: '#/components/examples/ReportMtr'  }
+        '404':
+          description: UUID not found or wrong format.
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /report/{uuid}/og-image:
+    get:
+      tags: [Reporting]
+      operationId: getReportOgImage
+      summary: Continental status map (PNG, 1200×630)
+      description: |
+        Renders an Open Graph card showing per-continent up/down status (green / amber / red / inactive). 1200×630 PNG, suitable for `<meta property="og:image">` and social previews.
+
+        Cached with the same age-based policy as `/report/{uuid}`: `no-store` until the test settles, then `public, max-age=31536000, immutable`.
+      parameters:
+        - { name: uuid, in: path, required: true, schema: { type: string, format: uuid }, example: "0710831d-1589-47d4-9fc1-885fe33a25e4" }
+      responses:
+        '200':
+          description: PNG image.
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        '404': { description: UUID not found. }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /report/{uuid}/country-map:
+    get:
+      tags: [Reporting]
+      operationId: getReportCountryMap
+      summary: Per-country world map (SVG or PNG)
+      description: |
+        Renders a country-coloured world map for the report. Each country with a participating node is filled green / amber / red based on its up/down ratio. Default response is SVG; pass `?format=png` for a rasterised PNG at one of three resolutions.
+
+        Cached identically to `/og-image`.
+      parameters:
+        - { name: uuid,   in: path,  required: true,  schema: { type: string, format: uuid }, example: "0710831d-1589-47d4-9fc1-885fe33a25e4" }
+        - { name: format, in: query, required: false, schema: { type: string, enum: [svg, png], default: svg } }
+        - { name: res,    in: query, required: false, schema: { type: string, enum: [low, med, high], default: med }, description: "PNG resolution: low=800px, med=1200px, high=2000px wide." }
+      responses:
+        '200':
+          description: SVG (default) or PNG image.
+          content:
+            image/svg+xml:
+              schema: { type: string }
+            image/png:
+              schema: { type: string, format: binary }
+        '404': { description: UUID not found. }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+# ──────────────────────────────────────────────────────────────────────────
+components:
+
+  headers:
+    X-Ratelimit-Limit:
+      description: Maximum requests permitted in the current bucket window.
+      schema: { type: integer, example: 60 }
+    X-Ratelimit-Remaining:
+      description: Requests remaining in the current bucket window. Reaches `0` immediately before the next request returns `429`.
+      schema: { type: integer, example: 52 }
+
+  responses:
+    InvalidApiKey:
+      description: The supplied `apikey` is not a valid UUID, is unknown, or is disabled. Anonymous use does not return this — `apikey` may simply be `null`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { success: false, error: "Invalid or inactive API key." }
+    BadInput:
+      description: Bad request (missing/invalid input).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { status: 400, error: "No target provided", success: false }
+    ValidationError:
+      description: Request validation failed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { status: 422, error: "The target field is required.", success: false }
+    RateLimited:
+      description: Rate limit reached. Wait or supply a higher-tier API key.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { success: false, error: "Rate limit exceeded. Please slow down." }
+    ServerError:
+      description: Internal error.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { status: 500, error: "Internal server error.", success: false }
+
+  schemas:
+
+    # ─── Requests ───────────────────────────────────────────────────────
+
+    TargetRequest:
+      type: object
+      required: [target]
+      properties:
+        apikey: { type: string, format: uuid, nullable: true, description: "Your API key (UUID). Leave null for anonymous use." }
+        target: { type: string, example: "check-host.cc", description: "Hostname or IP address." }
+
+    DNSTargetRequest:
+      type: object
+      required: [target]
+      properties:
+        apikey:      { type: string, format: uuid, nullable: true }
+        target:      { type: string, example: "check-host.cc" }
+        querymethod: { type: string, default: "A/AAAA", enum: [A/AAAA, A, AAAA, NS, MD, MF, CNAME, SOA, MB, MG, MR, "NULL", WKS, PTR, HINFO, MINFO, MX, TXT, SRV, EDNS, SPF, AXFR, MAILB, MAILA, ANY, CAA, DNSKEY] }
+        region:      { type: array, items: { type: string }, example: ["DE"] }
+
+    MonitoringRequest:
+      type: object
+      required: [target]
+      properties:
+        apikey:       { type: string, format: uuid, nullable: true }
+        target:       { type: string, example: "check-host.cc" }
+        repeatchecks: { type: integer, minimum: 0, maximum: 120, default: 0, description: "0 = single shot. ≥10 enables Live Mode (continuous probing for ~repeatchecks seconds)." }
+        region:
+          type: array
+          items: { type: string, example: "DE" }
+          example: ["DE"]
+          description: |
+            Mix of:
+
+            - Specific node names from `/locations` — e.g. `DE-NBG-Hetzner`
+            - ISO country codes — e.g. `DE`, `US`, `BR`
+            - Continent codes — `EU`, `NA`, `AS`, `SA`, `AF`, `OC`
+
+            Continent codes cannot be mixed with specific node names in the same request.
+
+            **If `region` is omitted entirely, the check fans out to every active node worldwide.** That is normally what you want for an availability check; specify a `region` to keep latency low or to test from a particular vantage point.
+
+    MTRMonitoringRequest:
+      type: object
+      required: [target]
+      properties:
+        apikey:         { type: string, format: uuid, nullable: true }
+        target:         { type: string, example: "check-host.cc" }
+        repeatchecks:   { type: integer, minimum: 3, maximum: 30, default: 5, description: "Packets per hop." }
+        forceIPversion: { type: integer, enum: [4, 6], nullable: true, description: "Force IPv4 or IPv6. Not all nodes support IPv6." }
+        forceProtocol:  { type: string, enum: [udp, tcp], nullable: true, description: "Force UDP or TCP. Default is ICMP. Useful when ICMP is filtered." }
+        region:         { type: array, items: { type: string }, example: ["DE"] }
+
+    # ─── Responses ──────────────────────────────────────────────────────
+
+    MyIpResponse:
+      type: object
+      properties:
+        status:  { type: integer, example: 200 }
+        message: { type: string, example: "Your current IP is: 45.95.55.230" }
+        ip:      { type: string, example: "45.95.55.230" }
+        success: { type: boolean, example: true }
+
+    InfoResponse:
+      type: object
+      description: Geolocation, ASN, privacy and abuse data for a host or IP.
+      properties:
+        ip:             { type: string, example: "34.36.183.77" }
+        reverse:        { type: string, nullable: true, example: "77.183.36.34.bc.googleusercontent.com" }
+        country:        { type: string, example: "United States" }
+        countryCode:    { type: string, example: "US" }
+        isEu:           { type: boolean, example: false }
+        city:           { type: string, example: "Kansas City" }
+        continent:      { type: string, example: "North America" }
+        latitude:       { type: number, example: 39.09973 }
+        longitude:      { type: number, example: -94.57857 }
+        timeZone:       { type: string, example: "America/Chicago" }
+        postalCode:     { type: string, nullable: true, example: "64101" }
+        subdivision:    { type: string, nullable: true, example: "Missouri" }
+        currencyCode:   { type: string, nullable: true, example: "USD" }
+        callingCode:    { type: string, nullable: true, example: "1" }
+        privacy:
+          type: object
+          properties:
+            isAbuser:      { type: boolean }
+            isAnonymous:   { type: boolean }
+            isBogon:       { type: boolean }
+            isHosting:     { type: boolean }
+            isIcloudRelay: { type: boolean }
+            isProxy:       { type: boolean }
+            isTor:         { type: boolean }
+            isVpn:         { type: boolean }
+        asn:
+          type: object
+          nullable: true
+          properties:
+            asn:         { type: string, example: "AS396982" }
+            route:       { type: string, example: "34.32.0.0/11" }
+            netname:     { type: string, example: "GOOGLE-CLOUD-PLATFORM" }
+            name:        { type: string, example: "Google LLC" }
+            countryCode: { type: string, example: "US" }
+            domain:      { type: string, example: "google.com" }
+            type:        { type: string, example: "hosting" }
+            rir:         { type: string, example: "ARIN" }
+        company:
+          type: object
+          nullable: true
+          properties:
+            name:        { type: string }
+            domain:      { type: string }
+            countryCode: { type: string }
+            type:        { type: string }
+        abuse:
+          type: object
+          nullable: true
+          properties:
+            address:     { type: string }
+            countryCode: { type: string }
+            email:       { type: string, format: email }
+            name:        { type: string }
+            network:     { type: string }
+            phone:       { type: string }
+        success: { type: boolean, example: true }
+
+    LocationsResponse:
+      type: object
+      properties:
+        status:        { type: integer, example: 200 }
+        CountryCodes:  { type: string, description: "Hint string — country codes are derived from `locationlist[].countryCode`." }
+        Continents:    { type: array, items: { type: string }, example: ["EU"] }
+        locationlist:
+          type: array
+          items: { $ref: '#/components/schemas/LocationItem' }
+
+    LocationItem:
+      type: object
+      properties:
+        continent:          { type: string, example: "EU" }
+        country:            { type: string, example: "Germany" }
+        countryCode:        { type: string, example: "DE" }
+        city:               { type: string, example: "Nuernberg" }
+        asn:                { type: string, example: "AS24940" }
+        isp:                { type: string, example: "Hetzner Online GmbH" }
+        datacenter:         { type: string, example: "Hetzner" }
+        monitoring_allowed: { type: integer, example: 1 }
+        hostname:           { type: string, nullable: true, example: "de-nbg-het.check-host.eu" }
+        locationname:       { type: string, example: "DE-NBG-Hetzner", description: "Use this in `region` to target this exact node." }
+        sponsor:            { type: string, nullable: true }
+        sponsor_url:        { type: string, nullable: true, format: uri }
+        latitude:           { type: number, nullable: true }
+        longitude:          { type: number, nullable: true }
+
+    CheckCreated:
+      type: object
+      properties:
+        status:       { type: integer, example: 200 }
+        success:      { type: boolean, example: true }
+        target:       { type: string, example: "check-host.cc" }
+        method:       { type: string, example: "ping" }
+        repeatchecks: { type: integer, example: 0 }
+        region:       { type: array, items: { type: string }, example: ["DE"] }
+        uuid:         { type: string, format: uuid }
+        reportURL:    { type: string, format: uri, example: "https://check-host.cc/report/0710831d-1589-47d4-9fc1-885fe33a25e4" }
+        apiURL:       { type: string, format: uri, example: "https://api.check-host.cc/report/0710831d-1589-47d4-9fc1-885fe33a25e4" }
+        og-imageURL:  { type: string, format: uri }
+        autodelete:   { type: string, example: "12-05-2036", description: "DD-MM-YYYY. Reports are kept ~10 years." }
+        message:      { type: string, example: "Broadcasted task to all slaves." }
+        port:         { type: integer, nullable: true }
+        query:        { type: string, nullable: true, description: "DNS record type when method is `dns`." }
+        payload:      { type: string, nullable: true, description: "UDP payload echoed back (hex string)." }
+
+    CheckReport:
+      type: object
+      properties:
+        status:       { type: integer, example: 200 }
+        success:      { type: boolean, example: true }
+        target:       { type: string }
+        method:       { type: string, enum: [ping, tcp, udp, http, dns, mtr] }
+        query:        { type: string, nullable: true }
+        repeatchecks: { type: integer }
+        created_at:   { type: string, format: date-time }
+        delete_at:    { type: string }
+        payload:      { type: string, nullable: true }
+        data:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/ReportLocation' }
+          description: "Map keyed by `locationname`. Empty until at least one node has reported."
+
+    ReportLocation:
+      type: object
+      properties:
+        id:                 { type: integer }
+        continent:          { type: string }
+        country:            { type: string }
+        countryCode:        { type: string }
+        city:               { type: string }
+        isp:                { type: string }
+        asn:                { type: string }
+        datacenter:         { type: string }
+        monitoring_allowed: { type: integer }
+        rabbitmq_queue:     { type: string }
+        locationname:       { type: string }
+        hostname:           { type: string, nullable: true }
+        sponsor:            { type: string, nullable: true }
+        sponsor_url:        { type: string, nullable: true }
+        latitude:           { type: number, nullable: true }
+        longitude:          { type: number, nullable: true }
+        checks:
+          oneOf:
+            - { type: array, items: { $ref: '#/components/schemas/PingCheck' }, description: "ping/tcp/udp" }
+            - { $ref: '#/components/schemas/HttpCheck' }
+            - { $ref: '#/components/schemas/DnsCheck' }
+            - { $ref: '#/components/schemas/MtrCheck' }
+
+    PingCheck:
+      type: object
+      description: Single probe result for ping, tcp, or udp.
+      properties:
+        location_id:    { type: integer }
+        slave_id:       { type: integer }
+        repeat:         { type: integer }
+        connectiontime: { type: number, description: "Milliseconds. 0 = sub-millisecond." }
+        target_ip:      { type: string }
+        errortext:      { type: string }
+        status:         { type: integer, enum: [0, 1], description: "1 = success, 0 = fail." }
+
+    HttpCheck:
+      type: array
+      items:
+        type: object
+        properties:
+          location_id:     { type: integer }
+          slave_id:        { type: integer }
+          repeat:          { type: integer }
+          connectiontime:  { type: number }
+          http_status:     { type: integer, example: 200 }
+          http_statustext: { type: string,  example: "OK" }
+          target_ip:       { type: string }
+          status:          { type: integer, enum: [0, 1] }
+
+    DnsCheck:
+      type: object
+      description: DNS lookup result (single object, not an array).
+      properties:
+        location_id: { type: integer }
+        slave_id:    { type: integer }
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              ttl:      { type: integer, example: 300 }
+              address:  { type: string,  example: "34.36.183.77", description: "For A/AAAA records." }
+              data:     { type: string,  description: "For TXT/MX/CNAME records." }
+              exchange: { type: string,  description: "For MX records." }
+              ns:       { type: string,  description: "For NS records." }
+        errortext: { type: string }
+        status:    { type: integer, enum: [0, 1] }
+
+    MtrCheck:
+      type: object
+      description: MTR result (single object). `data.hubs` is the per-hop list.
+      properties:
+        location_id: { type: integer }
+        slave_id:    { type: integer }
+        data:
+          type: object
+          properties:
+            mtr:
+              type: object
+              properties:
+                src:        { type: string }
+                dst:        { type: string }
+                tos:        { type: integer }
+                tests:      { type: integer }
+                psize:      { type: string }
+                bitpattern: { type: string }
+            hubs:
+              type: array
+              items:
+                type: object
+                properties:
+                  count:   { type: integer, description: "Hop number (1-indexed)." }
+                  host:    { type: string,  description: "Hop IP, or `-` for an unresponsive hop." }
+                  Loss%:   { type: number }
+                  Snt:     { type: integer }
+                  Last:    { type: number }
+                  Avg:     { type: number }
+                  Best:    { type: number }
+                  Wrst:    { type: number }
+                  StDev:   { type: number }
+                  ASN:     { type: string }
+                  PTR:     { type: string }
+        errortext: { type: string }
+        status:    { type: integer, enum: [0, 1] }
+
+    ErrorResponse:
+      type: object
+      properties:
+        status:  { type: integer, example: 400 }
+        success: { type: boolean, example: false }
+        error:   { type: string,  example: "No target provided" }
+
+  examples:
+
+    InfoCheckHost:
+      summary: /info for check-host.cc
+      value:
+        ip: "34.36.183.77"
+        reverse: "77.183.36.34.bc.googleusercontent.com"
+        country: "United States"
+        countryCode: "US"
+        isEu: false
+        city: "Kansas City"
+        continent: "North America"
+        latitude: 39.09973
+        longitude: -94.57857
+        timeZone: "America/Chicago"
+        postalCode: "64101"
+        subdivision: "Missouri"
+        currencyCode: "USD"
+        callingCode: "1"
+        privacy: { isAbuser: false, isAnonymous: false, isBogon: false, isHosting: true, isIcloudRelay: false, isProxy: false, isTor: false, isVpn: false }
+        asn: { asn: "AS396982", route: "34.32.0.0/11", netname: "GOOGLE-CLOUD-PLATFORM", name: "Google LLC", countryCode: "US", domain: "google.com", type: "hosting", rir: "ARIN" }
+        company: { name: "Google LLC", domain: "google.com", countryCode: "US", type: "hosting" }
+        abuse: { address: "1600 Amphitheatre Parkway, Mountain View, CA, 94043, US", countryCode: "US", email: "google-cloud-compliance@google.com", name: "Google LLC", network: "34.4.5.0 - 34.63.255.255", phone: "+1-650-253-0000" }
+        success: true
+
+    ReportPing:
+      summary: Completed Ping report (1 node, DE region)
+      value:
+        status: 200
+        success: true
+        target: "check-host.cc"
+        method: "ping"
+        query: null
+        repeatchecks: 0
+        created_at: "2026-05-12T00:30:43.000000Z"
+        delete_at: "2036-05-12 02:30:43"
+        payload: null
+        data:
+          DE-NBG-Hetzner:
+            id: 8
+            continent: "EU"
+            country: "Germany"
+            countryCode: "DE"
+            city: "Nuernberg"
+            isp: "Hetzner Online GmbH"
+            asn: "AS24940"
+            datacenter: "Hetzner"
+            monitoring_allowed: 1
+            rabbitmq_queue: "DE-NBG-Hetzner"
+            locationname: "DE-NBG-Hetzner"
+            hostname: "de-nbg-het.check-host.eu"
+            sponsor: null
+            sponsor_url: null
+            latitude: null
+            longitude: null
+            checks:
+              - { location_id: 8, slave_id: 1, repeat: 0, connectiontime: 4, target_ip: "34.36.183.77", errortext: "", status: 1 }
+
+    ReportHttp:
+      summary: Completed HTTP report (single shot)
+      value:
+        status: 200
+        success: true
+        target: "https://check-host.cc"
+        method: "http"
+        query: null
+        repeatchecks: 0
+        created_at: "2026-05-12T00:31:00.000000Z"
+        delete_at: "2036-05-12 02:31:00"
+        payload: null
+        data:
+          DE-NBG-Hetzner:
+            id: 8
+            continent: "EU"
+            country: "Germany"
+            countryCode: "DE"
+            city: "Nuernberg"
+            isp: "Hetzner Online GmbH"
+            asn: "AS24940"
+            datacenter: "Hetzner"
+            monitoring_allowed: 1
+            rabbitmq_queue: "DE-NBG-Hetzner"
+            locationname: "DE-NBG-Hetzner"
+            hostname: "de-nbg-het.check-host.eu"
+            sponsor: null
+            sponsor_url: null
+            latitude: null
+            longitude: null
+            checks:
+              - { location_id: 8, slave_id: 1, repeat: 0, connectiontime: 20, http_status: 200, http_statustext: "OK", target_ip: "34.36.183.77", status: 1 }
+
+    ReportHttpLive:
+      summary: Completed HTTP report in Live mode (repeatchecks=15 → 16 entries)
+      value:
+        status: 200
+        success: true
+        target: "https://check-host.cc"
+        method: "http"
+        query: null
+        repeatchecks: 15
+        created_at: "2026-05-12T00:31:30.000000Z"
+        delete_at: "2036-05-12 02:31:30"
+        payload: null
+        data:
+          DE-NBG-Hetzner:
+            id: 8
+            continent: "EU"
+            country: "Germany"
+            countryCode: "DE"
+            city: "Nuernberg"
+            isp: "Hetzner Online GmbH"
+            asn: "AS24940"
+            datacenter: "Hetzner"
+            monitoring_allowed: 1
+            rabbitmq_queue: "DE-NBG-Hetzner"
+            locationname: "DE-NBG-Hetzner"
+            hostname: "de-nbg-het.check-host.eu"
+            sponsor: null
+            sponsor_url: null
+            latitude: null
+            longitude: null
+            checks:
+              - { location_id: 8, slave_id: 1, repeat: 0,  connectiontime: 35, http_status: 200, http_statustext: "OK", target_ip: "34.36.183.77", status: 1 }
+              - { location_id: 8, slave_id: 1, repeat: 1,  connectiontime: 12, http_status: 200, http_statustext: "OK", target_ip: "34.36.183.77", status: 1 }
+              - { location_id: 8, slave_id: 1, repeat: 2,  connectiontime: 14, http_status: 200, http_statustext: "OK", target_ip: "34.36.183.77", status: 1 }
+              # … entries 3–14 elided …
+              - { location_id: 8, slave_id: 1, repeat: 15, connectiontime: 13, http_status: 200, http_statustext: "OK", target_ip: "34.36.183.77", status: 1 }
+
+    ReportDns:
+      summary: Completed DNS A-record report — note `checks` is an object, not an array
+      value:
+        status: 200
+        success: true
+        target: "check-host.cc"
+        method: "dns"
+        query: "A"
+        repeatchecks: 0
+        created_at: "2026-05-12T00:31:01.000000Z"
+        delete_at: "2036-05-12 02:31:01"
+        payload: null
+        data:
+          DE-NBG-Hetzner:
+            id: 8
+            continent: "EU"
+            country: "Germany"
+            countryCode: "DE"
+            city: "Nuernberg"
+            isp: "Hetzner Online GmbH"
+            asn: "AS24940"
+            datacenter: "Hetzner"
+            monitoring_allowed: 1
+            rabbitmq_queue: "DE-NBG-Hetzner"
+            locationname: "DE-NBG-Hetzner"
+            hostname: "de-nbg-het.check-host.eu"
+            sponsor: null
+            sponsor_url: null
+            latitude: null
+            longitude: null
+            checks:
+              location_id: 8
+              slave_id: 1
+              data:
+                - { ttl: 300, address: "34.36.183.77" }
+              errortext: ""
+              status: 1
+
+    ReportMtr:
+      summary: Completed MTR report (truncated — `hubs` lists every hop)
+      value:
+        status: 200
+        success: true
+        target: "check-host.cc"
+        method: "mtr"
+        query: null
+        repeatchecks: 5
+        created_at: "2026-05-12T00:31:01.000000Z"
+        delete_at: "2036-05-12 02:31:01"
+        payload: null
+        data:
+          DE-NBG-Hetzner:
+            id: 8
+            continent: "EU"
+            country: "Germany"
+            countryCode: "DE"
+            city: "Nuernberg"
+            isp: "Hetzner Online GmbH"
+            asn: "AS24940"
+            datacenter: "Hetzner"
+            monitoring_allowed: 1
+            rabbitmq_queue: "DE-NBG-Hetzner"
+            locationname: "DE-NBG-Hetzner"
+            hostname: "de-nbg-het.check-host.eu"
+            sponsor: null
+            sponsor_url: null
+            latitude: null
+            longitude: null
+            checks:
+              location_id: 8
+              slave_id: 1
+              data:
+                mtr: { src: "e6a6076aff2d", dst: "34.36.183.77", tos: 0, tests: 5, psize: "64", bitpattern: "0x00" }
+                hubs:
+                  - { count: 1, host: "172.19.0.1",      "Loss%": 0,   Snt: 5, Last: 0.197, Avg: 0.214, Best: 0.168, Wrst: 0.318, StDev: 0.059, ASN: "-",       PTR: "-" }
+                  - { count: 2, host: "172.31.1.1",      "Loss%": 0,   Snt: 5, Last: 2.785, Avg: 2.933, Best: 2.196, Wrst: 3.562, StDev: 0.498, ASN: "-",       PTR: "-" }
+                  - { count: 3, host: "116.203.161.165", "Loss%": 0,   Snt: 5, Last: 0.396, Avg: 0.549, Best: 0.353, Wrst: 0.908, StDev: 0.218, ASN: "AS24940", PTR: "12936.your-cloud.host" }
+                  - { count: 4, host: "-",               "Loss%": 100, Snt: 5, Last: 0,     Avg: 0,     Best: 0,     Wrst: 0,     StDev: 0,     ASN: "-",       PTR: "-" }
+              errortext: ""
+              status: 1
