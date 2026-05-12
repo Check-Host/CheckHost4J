@@ -114,6 +114,49 @@ public class CheckHost {
         return get("/report/" + uuid, JsonNode.class);
     }
 
+    /**
+     * Fetches the dynamic 1200x630 PNG status map for a check UUID.
+     * Returns the raw PNG bytes.
+     */
+    public byte[] ogImage(String uuid) {
+        return getBinary("/report/" + uuid + "/og-image", "image/png");
+    }
+
+    /**
+     * Fetches the per-country world map for a check UUID. Default
+     * format is SVG; pass {@code "png"} with a resolution for the
+     * rasterised variant.
+     *
+     * @param uuid       The check UUID.
+     * @param format     {@code "svg"} (default) or {@code "png"}.
+     * @param resolution PNG resolution: {@code "low"} (800px),
+     *                   {@code "med"} (1200px), or {@code "high"}
+     *                   (2000px). Ignored for SVG.
+     * @return Raw image bytes (UTF-8 text for SVG, binary for PNG).
+     */
+    public byte[] countryMap(String uuid, String format, String resolution) {
+        if (format == null || format.isEmpty()) format = "svg";
+        if (resolution == null || resolution.isEmpty()) resolution = "med";
+        if (!"svg".equals(format) && !"png".equals(format)) {
+            throw new CheckHostException("format must be 'svg' or 'png', got '" + format + "'.");
+        }
+        switch (resolution) {
+            case "low": case "med": case "high": break;
+            default:
+                throw new CheckHostException(
+                        "resolution must be 'low', 'med', or 'high', got '" + resolution + "'."
+                );
+        }
+        String accept = "png".equals(format) ? "image/png" : "image/svg+xml";
+        String path = "/report/" + uuid + "/country-map?format=" + format + "&res=" + resolution;
+        return getBinary(path, accept);
+    }
+
+    /** Overload that defaults to SVG / medium resolution. */
+    public byte[] countryMap(String uuid) {
+        return countryMap(uuid, "svg", "med");
+    }
+
     // --- Internal Helpers ---
 
     private Map<String, Object> createPayload(String target, Object options) {
@@ -156,6 +199,35 @@ public class CheckHost {
             return execute(request, responseType);
         } catch (JsonProcessingException e) {
             throw new CheckHostException("Failed to serialize request payload", e);
+        }
+    }
+
+    /**
+     * Issues a GET against {@code endpoint} and returns the raw response
+     * body without trying to JSON-decode it. Used for binary endpoints
+     * (og-image, country-map).
+     */
+    private byte[] getBinary(String endpoint, String accept) {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(BASE_URL + endpoint))
+                .header("Accept", accept)
+                // Disable transparent decompression so the byte stream
+                // matches the wire content exactly.
+                .header("Accept-Encoding", "identity")
+                .GET()
+                .build();
+        try {
+            HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            if (response.statusCode() >= 400) {
+                throw new CheckHostException(
+                        "API Error: " + response.statusCode(),
+                        response.statusCode()
+                );
+            }
+            return response.body();
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            throw new CheckHostException("HTTP Request failed: " + e.getMessage(), e);
         }
     }
 
