@@ -134,6 +134,10 @@ public class CheckHost {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(BASE_URL + endpoint))
                 .header("Accept", "application/json")
+                // java.net.http.HttpClient does not transparently decompress
+                // gzip/br responses; ask the server for an identity body so
+                // we can hand it straight to Jackson.
+                .header("Accept-Encoding", "identity")
                 .GET()
                 .build();
         return execute(request, responseType);
@@ -146,6 +150,7 @@ public class CheckHost {
                     .uri(URI.create(BASE_URL + endpoint))
                     .header("Content-Type", "application/json")
                     .header("Accept", "application/json")
+                    .header("Accept-Encoding", "identity")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
                     .build();
             return execute(request, responseType);
