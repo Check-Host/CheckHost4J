@@ -1,38 +1,28 @@
 # GitLab CI for CheckHost4J (Java SDK).
 #
 # Sync to github.com/Check-Host/CheckHost4J is handled by a GitLab
-# native push mirror. Each job runs inside a clean Maven + Eclipse
-# Temurin 17 container via `docker run`, so the runner host doesn't
-# need Java or Maven installed locally.
+# native push mirror.
 
 stages:
   - test
   - build
   - publish
 
-variables:
-  MAVEN_IMAGE: "maven:3.9-eclipse-temurin-17"
-  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn"
+default:
+  image: maven:3.9-eclipse-temurin-17
 
-.in_maven: &in_maven
-  - >-
-    docker run --rm
-    -v "$CI_PROJECT_DIR:/work" -w /work
-    -e MAVEN_OPTS="$MAVEN_OPTS"
-    "$MAVEN_IMAGE"
-    sh -c "$JOB_SCRIPT"
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn"
 
 cache:
-  key: maven-cache
+  key: maven-${CI_COMMIT_REF_SLUG}
   paths:
     - .m2/repository
 
 test:
   stage: test
-  variables:
-    JOB_SCRIPT: "mvn -B -q test"
   script:
-    - *in_maven
+    - mvn -B -q test
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -40,10 +30,8 @@ test:
 
 build:
   stage: build
-  variables:
-    JOB_SCRIPT: "mvn -B -q package -DskipTests"
   script:
-    - *in_maven
+    - mvn -B -q package -DskipTests
   artifacts:
     paths:
       - target/*.jar
@@ -53,13 +41,11 @@ build:
     - if: $CI_COMMIT_TAG
 
 # Optional Sonatype Central deploy. Requires CENTRAL_USERNAME and
-# CENTRAL_PASSWORD masked CI/CD variables, plus GPG_PRIVATE_KEY and
-# GPG_PASSPHRASE if signing. Disabled until those are configured.
+# CENTRAL_PASSWORD masked CI/CD variables. Disabled until those are
+# configured.
 publish_central:
   stage: publish
-  variables:
-    JOB_SCRIPT: "mvn -B -q deploy -DskipTests -Dcentral.username=$CENTRAL_USERNAME -Dcentral.password=$CENTRAL_PASSWORD"
   script:
-    - *in_maven
+    - mvn -B -q deploy -DskipTests -Dcentral.username=$CENTRAL_USERNAME -Dcentral.password=$CENTRAL_PASSWORD
   rules:
     - if: $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+/ && $CENTRAL_USERNAME && $CENTRAL_PASSWORD
