@@ -26,10 +26,11 @@ public class CheckHostTest {
 
     private void sleepToAvoidRateLimit() {
         try {
-            // With an API key the per-IP bucket is more generous; without
-            // it the API requires slower execution between checks.
-            long ms = (System.getenv("CHECK_HOST_API_KEY") == null
-                    || System.getenv("CHECK_HOST_API_KEY").isEmpty()) ? 5000L : 2000L;
+            // With CHECK_HOST_API_KEY the per-IP bucket is generous, so a
+            // tiny pause keeps log ordering deterministic without
+            // wasting CI minutes. Anonymous tier still needs ~5s.
+            String key = System.getenv("CHECK_HOST_API_KEY");
+            long ms = (key == null || key.isEmpty()) ? 5000L : 300L;
             Thread.sleep(ms);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
