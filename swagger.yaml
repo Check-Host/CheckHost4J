@@ -1,9 +1,9 @@
 openapi: 3.0.3
 info:
   title: Check-Host.cc API
-  version: 2.0.0
+  version: 2.1.0
   description: |
-    The Check-Host.cc API runs distributed network diagnostics from 50+ global nodes — Ping, MTR, DNS, HTTP, TCP and UDP — and exposes IP/host metadata, WHOIS, and historic check reports.
+    The Check-Host.cc API runs distributed network diagnostics from 65+ global nodes — Ping, MTR, DNS, HTTP, TCP and UDP — and exposes IP/host metadata, WHOIS, and historic check reports.
 
     ## How a check works
 
@@ -12,13 +12,25 @@ info:
     1. `POST /ping`, `/tcp`, `/udp`, `/http`, `/dns`, `/mtr` (or the equivalent GET shortcuts) — returns a UUID and a `reportURL`.
     2. Poll `GET /report/{uuid}` until each requested node has reported a result. Most checks complete in 1–10 seconds.
 
+    ## Network Intelligence
+
+    Beyond live checks, the API exposes our passive intelligence dataset as JSON. `GET /ip`, `/as`, `/prefix`, `/domain`, `/cert`, `/port`, `/software` and `/scan` return the same data that powers the entity pages — BGP/ASN attribution, GeoIP, TLS certificates, open ports, tech-stack, origin-leak candidates and honeypot activity. `POST /fullscan` dispatches a deep, on-demand multi-stage scan and `GET /fullscan/{uuid}/results` returns its aggregated findings. All of it is free: anonymous with per-IP limits, a token lifts them.
+
     ## Authentication
 
-    Anonymous use is permitted with conservative per-IP and per-target rate limits. To raise those limits and to gain a per-key monthly quota, pass an `apikey` (UUID format) in the request body. Public endpoints accept the field as `null`.
+    Anonymous use is permitted with conservative per-IP and per-target rate limits. To raise those limits and gain a per-token monthly quota, send your API token (UUID) in the `Authorization` header:
+
+    ```
+    Authorization: Bearer 550e8400-e29b-41d4-a716-446655440000
+    ```
+
+    The header works for GET and POST alike and keeps the token out of URLs, logs and referrers. `X-API-Key: <token>` is accepted as an alias for clients that cannot set `Authorization`.
+
+    Authentication is optional throughout — omit the header for anonymous access.
 
     ## Rate limits
 
-    Limits are applied per-IP, per-API-key, and per-target globally to prevent abuse. Exceeding any bucket returns `429`. Live-mode checks (`repeatchecks > 9`) consume a smaller, separate budget.
+    Limits are applied per-IP, per-token, and per-target globally to prevent abuse. Exceeding any bucket returns `429`. Live-mode checks (`repeatchecks > 9`) consume a smaller, separate budget.
 
     ## Official SDKs
 
@@ -35,9 +47,11 @@ info:
     ## Quick example — polling pattern
 
     ```bash
-    # 1. Dispatch a check, capture the UUID
+    # 1. Dispatch a check, capture the UUID.
+    #    Drop the Authorization line to run anonymously.
     UUID=$(curl -s -X POST https://api.check-host.cc/ping \
       -H 'Content-Type: application/json' \
+      -H "Authorization: Bearer $CHECK_HOST_TOKEN" \
       -d '{"target":"check-host.cc","region":["DE"]}' | jq -r .uuid)
 
     # 2. Poll the report until every node has reported
@@ -67,6 +81,8 @@ x-tagGroups:
     tags: [Monitoring]
   - name: Read results
     tags: [Reporting]
+  - name: Network Intelligence
+    tags: [Intelligence, Fullscan]
   - name: Lookups
     tags: [Utilities]
 
@@ -86,6 +102,23 @@ tags:
       url: https://github.com/Check-Host
   - name: Reporting
     description: Fetch the JSON report, the dynamic OG image, or the country-coloured world map for a previously dispatched check.
+  - name: Intelligence
+    description: >-
+      Machine-readable network-intelligence lookups — the JSON twin of the /ip, /as,
+      /domain, /cert … entity pages. Aggregated from our CT-log mirror, world scans,
+      BGP/RIR/PeeringDB/RPKI mirrors and honeypot sensors. Open to guests with a
+      per-IP rate limit; an API token lifts the limits.
+  - name: Fullscan
+    description: >-
+      Dispatch a deep, multi-stage scan (ports + banners + TLS + DNS + threat-intel)
+      of an IP, CIDR, domain or ASN, and read the aggregated results. Asynchronous:
+      submit, then poll the status and results endpoints.
+
+# Auth is optional everywhere: `Authorization: Bearer <key>` (the default) lifts
+# rate limits, and the empty requirement `{}` permits anonymous use.
+security:
+  - BearerAuth: []
+  - {}
 
 paths:
   # ─────────────────────────────  Utilities  ─────────────────────────────
@@ -105,8 +138,8 @@ paths:
                 $ref: '#/components/schemas/MyIpResponse'
               example:
                 status: 200
-                message: "Your current IP is: 45.95.55.230"
-                ip: "45.95.55.230"
+                message: "Your current IP is: 34.36.183.77"
+                ip: "34.36.183.77"
                 success: true
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -172,7 +205,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/TargetRequest' }
-            example: { apikey: null, target: "check-host.cc" }
+            example: { target:"check-host.cc" }
       responses:
         '200':
           description: OK
@@ -216,22 +249,6 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
 
-  /infoforce/{target}:
-    get:
-      tags: [Utilities]
-      operationId: infoForceFresh
-      summary: Force a fresh geolocation lookup (cache bypass)
-      description: Identical response to `/info/{target}` but skips the local 90-day geo cache and re-queries upstream providers. Use sparingly — counts against external API quota.
-      parameters:
-        - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
-      responses:
-        '200':
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/InfoResponse' }
-        '500': { $ref: '#/components/responses/ServerError' }
-
   /whois:
     post:
       tags: [Utilities]
@@ -243,7 +260,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/TargetRequest' }
-            example: { apikey: null, target: "check-host.cc" }
+            example: { target:"check-host.cc" }
       responses:
         '200':
           description: OK — RDAP record. Shape varies by registry; the example below is from Verisign for a `.cc` domain.
@@ -292,7 +309,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/MonitoringRequest' }
-            example: { apikey: null, target: "check-host.cc", region: ["DE"], repeatchecks: 0 }
+            example: { target:"check-host.cc", region: ["DE"], repeatchecks: 0 }
       responses:
         '200':
           description: Check dispatched.
@@ -318,7 +335,7 @@ paths:
                 port: null
                 query: null
                 payload: null
-        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '401': { $ref: '#/components/responses/InvalidToken' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -339,7 +356,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CheckCreated' }
-        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '401': { $ref: '#/components/responses/InvalidToken' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -364,7 +381,7 @@ paths:
                   required: [port]
                   properties:
                     port: { type: integer, minimum: 1, maximum: 65535, example: 443 }
-            example: { apikey: null, target: "check-host.cc", port: 443, region: ["DE"] }
+            example: { target:"check-host.cc", port: 443, region: ["DE"] }
       responses:
         '200':
           description: Check dispatched.
@@ -390,7 +407,7 @@ paths:
                 port: 443
                 query: null
                 payload: null
-        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '401': { $ref: '#/components/responses/InvalidToken' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -412,7 +429,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CheckCreated' }
-        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '401': { $ref: '#/components/responses/InvalidToken' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -440,7 +457,7 @@ paths:
                   properties:
                     port:    { type: integer, minimum: 1, maximum: 65535, example: 53 }
                     payload: { type: string, nullable: true, maxLength: 2048, example: "0x241a010000010000000000000377777706676f6f676c6503636f6d0000010001" }
-            example: { apikey: null, target: "1.1.1.1", port: 53, region: ["DE"] }
+            example: { target:"1.1.1.1", port: 53, region: ["DE"] }
       responses:
         '200':
           description: Check dispatched.
@@ -466,7 +483,7 @@ paths:
                 port: 53
                 query: null
                 payload: "0x241a010000010000000000000377777706676f6f676c6503636f6d0000010001"
-        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '401': { $ref: '#/components/responses/InvalidToken' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -489,7 +506,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CheckCreated' }
-        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '401': { $ref: '#/components/responses/InvalidToken' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -508,7 +525,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/MonitoringRequest' }
-            example: { apikey: null, target: "https://check-host.cc", region: ["DE"] }
+            example: { target:"https://check-host.cc", region: ["DE"] }
       responses:
         '200':
           description: Check dispatched.
@@ -534,7 +551,29 @@ paths:
                 port: null
                 query: null
                 payload: null
-        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '401': { $ref: '#/components/responses/InvalidToken' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /http/{target}:
+    get:
+      tags: [Monitoring]
+      operationId: checkHttpByPath
+      summary: HTTP/HTTPS check (GET)
+      description: GET shortcut for a bare host or scheme-prefixed origin (`https` assumed when no scheme is given). Use POST `/http` for a full URL with a path, a custom port, or region targeting.
+      parameters:
+        - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
+      responses:
+        '200':
+          description: Check dispatched.
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckCreated' }
+        '401': { $ref: '#/components/responses/InvalidToken' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -550,7 +589,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/DNSTargetRequest' }
-            example: { apikey: null, target: "check-host.cc", querymethod: "A", region: ["DE"] }
+            example: { target:"check-host.cc", querymethod: "A", region: ["DE"] }
       responses:
         '200':
           description: Check dispatched.
@@ -591,8 +630,8 @@ paths:
       operationId: checkDnsByPath
       summary: DNS record lookup (GET)
       parameters:
-        - { name: target, in: path, required: true,  schema: { type: string }, example: "check-host.cc" }
-        - { name: method, in: path, required: false, schema: { type: string, default: "A", enum: [A/AAAA, A, AAAA, NS, MD, MF, CNAME, SOA, MB, MG, MR, "NULL", WKS, PTR, HINFO, MINFO, MX, TXT, SRV, EDNS, SPF, AXFR, MAILB, MAILA, ANY, CAA, DNSKEY] }, example: "A" }
+        - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
+        - { name: method, in: path, required: true, schema: { type: string, default: "A", enum: [A/AAAA, A, AAAA, NS, MD, MF, CNAME, SOA, MB, MG, MR, "NULL", WKS, PTR, HINFO, MINFO, MX, TXT, SRV, EDNS, SPF, AXFR, MAILB, MAILA, ANY, CAA, DNSKEY] }, example: "A" }
       responses:
         '200':
           description: Check dispatched.
@@ -602,7 +641,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CheckCreated' }
-        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '401': { $ref: '#/components/responses/InvalidToken' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -621,7 +660,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/MTRMonitoringRequest' }
-            example: { apikey: null, target: "check-host.cc", repeatchecks: 5, region: ["DE"] }
+            example: { target:"check-host.cc", repeatchecks: 5, region: ["DE"] }
       responses:
         '200':
           description: Check dispatched.
@@ -647,7 +686,7 @@ paths:
                 port: null
                 query: null
                 payload: null
-        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '401': { $ref: '#/components/responses/InvalidToken' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -668,7 +707,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CheckCreated' }
-        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '401': { $ref: '#/components/responses/InvalidToken' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -759,8 +798,403 @@ paths:
         '404': { description: UUID not found. }
         '500': { $ref: '#/components/responses/ServerError' }
 
+  # ────────────────────────  Network Intelligence  ────────────────────────
+
+  /ip/{ip}:
+    get:
+      tags: [Intelligence]
+      operationId: intelIp
+      summary: IP intelligence profile
+      description: |
+        Everything we know about a single IPv4/IPv6 address — reverse DNS, open ports + banners, TLS certificates, BGP/ASN attribution, GeoIP, tech-stack, co-hosted domains, origin-leak candidates, threat-intel matches and honeypot activity. The JSON twin of the `/ip/{ip}` page. Sections with no data come back as empty arrays / `null`.
+
+        Honeypot passwords are never returned in cleartext — each honeypot entry exposes only `password_captured` (bool) and `password_len`.
+      parameters:
+        - { name: ip, in: path, required: true, schema: { type: string }, example: "1.1.1.1" }
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IpIntel' }
+              example:
+                success: true
+                ip: "1.1.1.1"
+                family: "IPv4"
+                data:
+                  ptr: { ptr: "one.one.one.one", observed_at: "2026-07-14 09:12:44" }
+                  open_ports:
+                    - { port: 443, proto: "tcp", last_seen: "2026-07-14 03:20:12", service: "https" }
+                  tls_certs:
+                    - { port: 443, sha256: "3a1b8f0c…9f90", subject: "CN=cloudflare-dns.com", sans_str: "cloudflare-dns.com, one.one.one.one", not_before: "2025-01-02 00:00:00", not_after: "2026-01-15 23:59:59", observed_at: "2026-07-14 03:20:12" }
+                  bgp: { asn: 13335, as_name: "Cloudflare, Inc.", prefix: "1.1.1.0/24", rpki_status: "valid", country_code: "US", registry: "ARIN" }
+                  geo: { country_code: "US", country_name: "United States", continent_code: "NA" }
+                  techs:
+                    - { technology: "Cloudflare", category: "CDN", confidence: 100 }
+                  threat_count: 0
+                  honeypot: null
+                  honeypot_recent: []
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /as/{asn}:
+    get:
+      tags: [Intelligence]
+      operationId: intelAsn
+      summary: ASN intelligence profile
+      description: Full autonomous-system intel aggregated from our BGP mirrors (CAIDA pfx2as + AS-relationships, RIR delegated stats, PeeringDB, RPKI) — profile, prefix counts, announced-IP totals, peers / providers / customers, IXP memberships, RPKI coverage, GeoIP footprint, top ports, hosted-domains and pingable-IP summaries. Accepts `13335` or `AS13335`.
+      parameters:
+        - { name: asn, in: path, required: true, schema: { type: string }, example: "AS13335" }
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Ratelimit-Limit:     { $ref: '#/components/headers/X-Ratelimit-Limit' }
+            X-Ratelimit-Remaining: { $ref: '#/components/headers/X-Ratelimit-Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AsnIntel' }
+              example:
+                success: true
+                asn: 13335
+                as_name: "Cloudflare, Inc."
+                data:
+                  as_name: "Cloudflare, Inc."
+                  as_type: "Content"
+                  country: "US"
+                  registry: "arin"
+                  prefix_count: 1542
+                  prefix_count_v4: 1180
+                  prefix_count_v6: 362
+                  announced_ips_v4: 1520640
+                  peers_count: 9821
+                  providers_count: 18
+                  customers_count: 420
+                  rpki_valid: 1500
+                  rpki_coverage_pct: 97.3
+                  ixp_count: 285
+                  hosted_domains: 8412339
+                  pingable_count: 94021
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /prefix/{net}/{mask}:
+    get:
+      tags: [Intelligence]
+      operationId: intelPrefix
+      summary: CIDR prefix intelligence
+      description: BGP origin (ASN), RPKI validity, GeoIP distribution, open-IP count, top ports, sample scanned hosts and cert subjects observed inside a CIDR block.
+      parameters:
+        - { name: net,  in: path, required: true, schema: { type: string }, example: "1.1.1.0" }
+        - { name: mask, in: path, required: true, schema: { type: integer, minimum: 0, maximum: 128 }, example: 24 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrefixIntel' }
+              example:
+                success: true
+                cidr: "1.1.1.0/24"
+                net: "1.1.1.0"
+                mask: 24
+                family: "IPv4"
+                anycast_label: "Anycast (Cloudflare)"
+                data:
+                  announced_by:
+                    - { asn: 13335, source: "caida-pfx2as", last_seen: "2026-07-13 22:00:00" }
+                  asn_name: "Cloudflare, Inc."
+                  open_ips: 42
+                  top_ports:
+                    - { port: 443, ips: "40" }
+                  geo: { country_code: "US", country_name: "United States", continent: "NA" }
+                  rpki:
+                    - { asn: 13335, max_length: 24, validity: "valid", trust_anchor: "arin" }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /domain/{domain}:
+    get:
+      tags: [Intelligence]
+      operationId: intelDomain
+      summary: Domain intelligence
+      description: Current DNS records + full passive-DNS history, TLS certificates, CT-log evidence, discovered subdomains and their resolutions, Wappalyzer tech-stack, IPs citing the domain in their HTML, and origin-leak (Cloudflare-bypass) candidates.
+      parameters:
+        - { name: domain, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainIntel' }
+              example:
+                success: true
+                domain: "check-host.cc"
+                data:
+                  dns_records:
+                    - { record_type: "A", value: "104.21.32.100", last_seen: "2026-07-14 08:00:00" }
+                  subdomains:
+                    - { subdomain: "docs.check-host.cc", source: "ct", observed_at: "2026-07-01 00:00:00" }
+                  tech_stack:
+                    - { technology: "Cloudflare", category: "CDN", confidence: 100 }
+                  apex_stats: { sub_count: "7", hosting_ips: "3", record_types: "6", certs: "14" }
+                  leak_candidates: []
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /cert/{sha256}:
+    get:
+      tags: [Intelligence]
+      operationId: intelCert
+      summary: TLS certificate intelligence
+      description: Certificate subject, issuer, SANs and validity window, plus every `(ip, port)` we have observed serving it and the matching CT-log entries. Falls back to CT-log data when the cert has not been observed live yet.
+      parameters:
+        - { name: sha256, in: path, required: true, schema: { type: string, pattern: '^[a-f0-9]{64}$' }, example: "3a1b8f0c9d2e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f90" }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CertIntel' }
+              example:
+                success: true
+                sha256: "3a1b8f0c9d2e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f90"
+                data:
+                  cert: { subject: "CN=cloudflare-dns.com", issuer: "DigiCert Global G2", sans_str: "cloudflare-dns.com, one.one.one.one", not_before: "2025-01-02 00:00:00", not_after: "2026-01-15 23:59:59", deployments: "4" }
+                  served_by:
+                    - { ip: "1.1.1.1", port: 443, last_seen: "2026-07-14 03:20:12" }
+                  ct_logs:
+                    - { operator: "Google", log_id: "argon2025", seen_at: "2025-01-02 04:00:00" }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /port/{port}:
+    get:
+      tags: [Intelligence]
+      operationId: intelPort
+      summary: Port exposure intelligence
+      description: How widespread a port is across the scanned Internet — open-IP count, most common server banners, top countries + ASNs, Wappalyzer tech-stack and a sample of recent hosts. Includes a well-known service hint.
+      parameters:
+        - { name: port, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 65535 }, example: 443 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PortIntel' }
+              example:
+                success: true
+                port: 443
+                well_known: "HTTPS"
+                data:
+                  open_ips: 48213904
+                  top_servers:
+                    - { server: "cloudflare", c: "5120334" }
+                  top_countries:
+                    - { cc: "US", ips: "12043221" }
+                  top_asns:
+                    - { asn: 13335, ips: "2201004", name: "Cloudflare, Inc." }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /software/{name}:
+    get:
+      tags: [Intelligence]
+      operationId: intelSoftware
+      summary: Software / tech-stack intelligence
+      description: Host counts for a detected technology, version breakdown, categories and a sample of hosts running it. Append `/{version}` to pin the stats to one version.
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string }, example: "nginx" }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SoftwareIntel' }
+              example:
+                success: true
+                name: "nginx"
+                version: null
+                data:
+                  host_count: 8412339
+                  top_versions:
+                    - { version: "1.24.0", c: "1204338" }
+                  categories:
+                    - { category: "Web servers", c: "8412339" }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /software/{name}/{version}:
+    get:
+      tags: [Intelligence]
+      operationId: intelSoftwareVersion
+      summary: Software intelligence (version-pinned)
+      description: Same as `/software/{name}`, restricted to a single version.
+      parameters:
+        - { name: name,    in: path, required: true, schema: { type: string }, example: "nginx" }
+        - { name: version, in: path, required: true, schema: { type: string }, example: "1.24.0" }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SoftwareIntel' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /scan/{target}:
+    get:
+      tags: [Intelligence]
+      operationId: intelScan
+      summary: Recent fullscan jobs for a target
+      description: Lists the most-recent fullscan jobs submitted for a target (IP, CIDR, domain or ASN), so clients can deep-link to a fresh report via `GET /fullscan/{uuid}/results` instead of triggering a redundant scan.
+      parameters:
+        - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanRecent' }
+              example:
+                success: true
+                target: "check-host.cc"
+                recent_scans:
+                  - { uuid: "9f2c8a14-3b6d-4e21-9a55-71b0c2d8e4f0", scope: "deep", status: "complete", subjobs_done: 5, subjobs_total: 5, created_at: "2026-07-14T09:12:44+00:00", completed_at: "2026-07-14T09:14:02+00:00" }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  # ─────────────────────────────  Fullscan  ─────────────────────────────
+
+  /fullscan:
+    post:
+      tags: [Fullscan]
+      operationId: fullscanSubmit
+      summary: Submit a fullscan job
+      description: |
+        Dispatches a deep, multi-stage scan of a target (IP, CIDR, domain or ASN). The manager classifies the target, fans out typed sub-jobs to dedicated workers (resolve / portscan / banner / body-fetch / threat-intel) and aggregates the results. Returns immediately with `status=pending` — poll `GET /fullscan/{uuid}` for progress and `GET /fullscan/{uuid}/results` for data.
+
+        Anonymous CIDR submissions are capped at `/24` (v4) / `/120` (v6); an API token raises that to `/20` / `/112`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FullscanSubmitRequest' }
+            example: { target:"check-host.cc", scope: "deep" }
+      responses:
+        '202':
+          description: Accepted — job queued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FullscanJob' }
+              example:
+                success: true
+                uuid: "9f2c8a14-3b6d-4e21-9a55-71b0c2d8e4f0"
+                target: "check-host.cc"
+                target_type: "domain"
+                scope: "deep"
+                status: "pending"
+                subjobs_total: 0
+                subjobs_done: 0
+                subjobs_failed: 0
+                error: null
+                report_url: "https://check-host.cc/fullscan/9f2c8a14-3b6d-4e21-9a55-71b0c2d8e4f0"
+                api_url: "https://check-host.cc/api/fullscan/9f2c8a14-3b6d-4e21-9a55-71b0c2d8e4f0"
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '502':
+          description: Scan queue unreachable — retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: Fullscan is not enabled on this deployment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /fullscan/{uuid}:
+    get:
+      tags: [Fullscan]
+      operationId: fullscanStatus
+      summary: Poll fullscan progress
+      description: Returns the current job counters. Workers bump `subjobs_done`; the job moves to `status=complete` (all sub-jobs done) or `partial` (some failed). For the findings themselves, use `GET /fullscan/{uuid}/results`.
+      parameters:
+        - { name: uuid, in: path, required: true, schema: { type: string, format: uuid }, example: "9f2c8a14-3b6d-4e21-9a55-71b0c2d8e4f0" }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  job:     { $ref: '#/components/schemas/FullscanJob' }
+        '400': { $ref: '#/components/responses/BadInput' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /fullscan/{uuid}/results:
+    get:
+      tags: [Fullscan]
+      operationId: fullscanResults
+      summary: Fetch aggregated fullscan results
+      description: Returns the actual findings a fullscan produced — open ports, banners, DNS records, BGP context and TLS certificates — aggregated from ClickHouse. Partial results are available while `status=running`.
+      parameters:
+        - { name: uuid, in: path, required: true, schema: { type: string, format: uuid }, example: "9f2c8a14-3b6d-4e21-9a55-71b0c2d8e4f0" }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FullscanResults' }
+              example:
+                success: true
+                data:
+                  uuid: "9f2c8a14-3b6d-4e21-9a55-71b0c2d8e4f0"
+                  target: "1.1.1.1"
+                  target_type: "ip"
+                  scope: "deep"
+                  status: "complete"
+                  subjobs_total: 5
+                  subjobs_done: 5
+                  open_ports:
+                    - { port: 443, proto: "tcp", service: "https", last_seen: "2026-07-14 09:13:11" }
+                  banners:
+                    - { port: 443, server_str: "cloudflare", observed_at: "2026-07-14 09:13:11" }
+                  bgp: { asn: 13335, as_name: "Cloudflare, Inc.", prefix: "1.1.1.0/24", rpki_status: "valid" }
+        '400': { $ref: '#/components/responses/BadInput' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
 # ──────────────────────────────────────────────────────────────────────────
 components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: UUID
+      description: >
+        Send your API token (UUID) as `Authorization: Bearer <token>`. It works
+        for every endpoint, GET and POST alike, and keeps the token out of URLs,
+        access logs and referrer headers. `X-API-Key: <token>` is accepted as an
+        alias for clients that cannot set `Authorization`. Authentication is
+        optional: anonymous use is allowed under conservative rate limits, and a
+        token simply lifts them.
 
   headers:
     X-Ratelimit-Limit:
@@ -771,12 +1205,12 @@ components:
       schema: { type: integer, example: 52 }
 
   responses:
-    InvalidApiKey:
-      description: The supplied `apikey` is not a valid UUID, is unknown, or is disabled. Anonymous use does not return this — `apikey` may simply be `null`.
+    InvalidToken:
+      description: The token in `Authorization` is not a valid UUID, is unknown, or is disabled. Anonymous requests never return this — omit the header entirely instead.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
-          example: { success: false, error: "Invalid or inactive API key." }
+          example: { success: false, error: "Invalid or inactive API token." }
     BadInput:
       description: Bad request (missing/invalid input).
       content:
@@ -790,7 +1224,7 @@ components:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
           example: { status: 422, error: "The target field is required.", success: false }
     RateLimited:
-      description: Rate limit reached. Wait or supply a higher-tier API key.
+      description: Rate limit reached. Wait, or send an API token for a higher-tier bucket.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -801,6 +1235,12 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
           example: { status: 500, error: "Internal server error.", success: false }
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { success: false, error: "Job not found." }
 
   schemas:
 
@@ -810,14 +1250,12 @@ components:
       type: object
       required: [target]
       properties:
-        apikey: { type: string, format: uuid, nullable: true, description: "Your API key (UUID). Leave null for anonymous use." }
         target: { type: string, example: "check-host.cc", description: "Hostname or IP address." }
 
     DNSTargetRequest:
       type: object
       required: [target]
       properties:
-        apikey:      { type: string, format: uuid, nullable: true }
         target:      { type: string, example: "check-host.cc" }
         querymethod: { type: string, default: "A/AAAA", enum: [A/AAAA, A, AAAA, NS, MD, MF, CNAME, SOA, MB, MG, MR, "NULL", WKS, PTR, HINFO, MINFO, MX, TXT, SRV, EDNS, SPF, AXFR, MAILB, MAILA, ANY, CAA, DNSKEY] }
         region:      { type: array, items: { type: string }, example: ["DE"] }
@@ -826,7 +1264,6 @@ components:
       type: object
       required: [target]
       properties:
-        apikey:       { type: string, format: uuid, nullable: true }
         target:       { type: string, example: "check-host.cc" }
         repeatchecks: { type: integer, minimum: 0, maximum: 120, default: 0, description: "0 = single shot. ≥10 enables Live Mode (continuous probing for ~repeatchecks seconds)." }
         region:
@@ -848,7 +1285,6 @@ components:
       type: object
       required: [target]
       properties:
-        apikey:         { type: string, format: uuid, nullable: true }
         target:         { type: string, example: "check-host.cc" }
         repeatchecks:   { type: integer, minimum: 3, maximum: 30, default: 5, description: "Packets per hop." }
         forceIPversion: { type: integer, enum: [4, 6], nullable: true, description: "Force IPv4 or IPv6. Not all nodes support IPv6." }
@@ -861,8 +1297,8 @@ components:
       type: object
       properties:
         status:  { type: integer, example: 200 }
-        message: { type: string, example: "Your current IP is: 45.95.55.230" }
-        ip:      { type: string, example: "45.95.55.230" }
+        message: { type: string, example: "Your current IP is: 34.36.183.77" }
+        ip:      { type: string, example: "34.36.183.77" }
         success: { type: boolean, example: true }
 
     InfoResponse:
@@ -1104,6 +1540,128 @@ components:
         status:  { type: integer, example: 400 }
         success: { type: boolean, example: false }
         error:   { type: string,  example: "No target provided" }
+
+    # ─── Intelligence / Fullscan ────────────────────────────────────────
+
+    IntelData:
+      type: object
+      additionalProperties: true
+      description: "Section map. Arrays are empty and scalars `null` where we hold no data yet — see each endpoint's example for the populated shape."
+
+    IpIntel:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        ip:      { type: string, example: "1.1.1.1" }
+        family:  { type: string, enum: [IPv4, IPv6] }
+        data:
+          allOf: [ { $ref: '#/components/schemas/IntelData' } ]
+          description: >-
+            Sections: `ptr`, `open_ports`, `banners`, `tls_certs`,
+            `co_hosted_domains`, `external_refs`, `leak_candidates`, `titles`,
+            `techs`, `bgp`, `geo`, `probe_findings`, `threat_matches`,
+            `threat_count`, `honeypot`, `honeypot_recent` (passwords masked as
+            `password_captured` + `password_len`), `honeypot_actor`,
+            `honeypot_ja`, `honeypot_classes`.
+
+    AsnIntel:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        asn:     { type: integer, example: 13335 }
+        as_name: { type: string, nullable: true, example: "Cloudflare, Inc." }
+        data:    { $ref: '#/components/schemas/IntelData' }
+
+    PrefixIntel:
+      type: object
+      properties:
+        success:       { type: boolean, example: true }
+        cidr:          { type: string, example: "1.1.1.0/24" }
+        net:           { type: string, example: "1.1.1.0" }
+        mask:          { type: integer, example: 24 }
+        family:        { type: string, enum: [IPv4, IPv6] }
+        anycast_label: { type: string, nullable: true, example: "Anycast (Cloudflare)" }
+        data:          { $ref: '#/components/schemas/IntelData' }
+
+    DomainIntel:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        domain:  { type: string, example: "check-host.cc" }
+        data:    { $ref: '#/components/schemas/IntelData' }
+
+    CertIntel:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        sha256:  { type: string, example: "3a1b8f0c9d2e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f90" }
+        data:    { $ref: '#/components/schemas/IntelData' }
+
+    PortIntel:
+      type: object
+      properties:
+        success:    { type: boolean, example: true }
+        port:       { type: integer, example: 443 }
+        well_known: { type: string, nullable: true, example: "HTTPS" }
+        data:       { $ref: '#/components/schemas/IntelData' }
+
+    SoftwareIntel:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        name:    { type: string, example: "nginx" }
+        version: { type: string, nullable: true }
+        data:    { $ref: '#/components/schemas/IntelData' }
+
+    ScanRecent:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        target:  { type: string, example: "check-host.cc" }
+        recent_scans:
+          type: array
+          items: { $ref: '#/components/schemas/FullscanJob' }
+
+    FullscanSubmitRequest:
+      type: object
+      required: [target]
+      properties:
+        target: { type: string, example: "check-host.cc", description: "IPv4/IPv6 address, CIDR block, domain or AS number." }
+        scope:  { type: string, enum: [basic, deep, full], default: deep, description: "`basic` = top-100 ports + banner; `deep` = full port range + TLS + body + threat-intel; `full` = deep + subdomain enumeration (domains only)." }
+
+    FullscanJob:
+      type: object
+      description: Master job row (the shape returned by submit, status, and each entry in `/scan`).
+      properties:
+        success:        { type: boolean, example: true }
+        uuid:           { type: string, format: uuid }
+        target:         { type: string, example: "check-host.cc" }
+        target_type:    { type: string, enum: [ip, cidr, domain, asn] }
+        scope:          { type: string, enum: [basic, deep, full] }
+        status:         { type: string, enum: [pending, running, complete, partial, failed] }
+        subjobs_total:  { type: integer, example: 5 }
+        subjobs_done:   { type: integer, example: 5 }
+        subjobs_failed: { type: integer, example: 0 }
+        error:          { type: string, nullable: true }
+        created_at:     { type: string, format: date-time, nullable: true }
+        completed_at:   { type: string, format: date-time, nullable: true }
+        report_url:     { type: string, format: uri }
+        api_url:        { type: string, format: uri }
+
+    FullscanResults:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          allOf:
+            - $ref: '#/components/schemas/FullscanJob'
+            - type: object
+              properties:
+                open_ports:  { type: array, items: { type: object } }
+                banners:     { type: array, items: { type: object } }
+                dns_records: { type: array, items: { type: object } }
+                bgp:         { type: object, nullable: true }
+                tls_certs:   { type: array, items: { type: object } }
 
   examples:
 

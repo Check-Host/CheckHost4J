@@ -19,12 +19,26 @@ cache:
   paths:
     - .m2/repository
 
+# Deterministic, offline unit tests. Tests tagged "live" are excluded by
+# the surefire config in pom.xml, so this job is unaffected by API
+# availability or rate limits.
 test:
   stage: test
   script:
     - mvn -B -q test
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# Live smoke test against the production API. Allowed to fail so a transient
+# blip or rate limit doesn't block a release, but it still shows up.
+test_live:
+  stage: test
+  script:
+    - mvn -B test -Dtest.excludedGroups= -Dtest.groups=live
+  allow_failure: true
+  rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
 

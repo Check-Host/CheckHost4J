@@ -14,6 +14,13 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!--
+          Tests tagged "live" hit the production API and are excluded by
+          default so `mvn test` stays deterministic and offline. Run them
+          with: mvn test -Dtest.excludedGroups= -Dgroups=live
+        -->
+        <test.excludedGroups>live</test.excludedGroups>
+        <test.groups></test.groups>
     </properties>
 
     <dependencies>
@@ -50,6 +57,10 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.1.2</version>
+                <configuration>
+                    <excludedGroups>${test.excludedGroups}</excludedGroups>
+                    <groups>${test.groups}</groups>
+                </configuration>
             </plugin>
         </plugins>
     </build>

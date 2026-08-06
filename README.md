@@ -9,7 +9,8 @@ Seamlessly integrate global network diagnostics into your backend. Perform remot
 - **Minimal Dependencies:** Built purely on the native `java.net.http.HttpClient` (Java 11+). Only requires Jackson for robust JSON parsing.
 - **Bulletproof Payloads:** Strictly utilizes POST requests for all active monitoring endpoints. This completely eliminates nasty URL-encoding issues with complex hostnames or custom UDP payloads.
 - **Modern & Clean:** Written for Java 17+ with full `record` classes to eliminate boilerplate, ensuring a beautifully typed structure.
-- **Smart Authentication:** API Key auto-injection. Configure your key once during initialization, and the core SDK seamlessly handles all authentication payloads under the hood.
+- **Header-Based Authentication:** Configure your token once during initialization; the SDK attaches it as an `Authorization: Bearer` header to every request. The token never lands in a URL or a request body.
+- **Network Intelligence & Fullscan:** Passive IP / ASN / prefix / domain / certificate / port / software lookups, plus deep on-demand scans with a built-in polling helper.
 
 ## Requirements
 
@@ -39,9 +40,9 @@ package cc.checkhost;
 
 import cc.checkhost.models.CheckCreated;
     public static void main(String[] args) {
-        // Initialize the client. The API Key is optional.
-        // Without an API key, standard public rate limits apply.
-        // CheckHost checkHost = new CheckHost("YOUR_API_KEY_HERE");
+        // Initialize the client. The API token is optional.
+        // Without a token, standard public rate limits apply.
+        // CheckHost checkHost = new CheckHost("YOUR_API_TOKEN_UUID");
         CheckHost checkHost = new CheckHost();
 
         // Example: Retrieve the public IP of your server
@@ -53,6 +54,25 @@ import cc.checkhost.models.CheckCreated;
     }
 }
 ```
+
+## Authentication
+
+The token is sent as an `Authorization: Bearer <token>` header on every
+request — GET, POST and binary alike. It is never placed in the query string
+or the request body, so it does not leak into access logs, referrer headers
+or browser history.
+
+```java
+CheckHost checkHost = new CheckHost("YOUR_API_TOKEN_UUID");
+
+// Optional second argument overrides the base URL - useful for the
+// https://check-host.cc/api mirror when api.check-host.cc is blocked.
+CheckHost mirror = new CheckHost("YOUR_API_TOKEN_UUID", "https://check-host.cc/api");
+```
+
+> **Migrating from v1.0:** the token used to travel in the JSON body as an
+> `apikey` field. That field is deprecated server-side. The constructor is
+> positional and unchanged, so `new CheckHost(yourToken)` keeps working as-is.
 
 ---
 
@@ -200,6 +220,131 @@ String taskUuid = "c0b4b0e3-aed7-4ae2-9f53-7bac879697cb";
 // Fetch the result payload (JsonNode)
 JsonNode report = checkHost.report(taskUuid);
 System.out.println(report.toPrettyString());
+```
+
+---
+
+### Network Intelligence
+
+Passive lookups against the dataset behind the entity pages — no check is dispatched to the monitoring nodes, so results come back immediately. Every method returns a `JsonNode` because each endpoint's `data` section has a different, open-ended key set; sections we hold no data for come back as empty arrays or `null`.
+
+#### IP Profile
+Reverse DNS, open ports and banners, TLS certificates, BGP/ASN attribution, GeoIP, tech-stack, co-hosted domains, origin-leak candidates, threat-intel matches and honeypot activity.
+```java
+JsonNode intel = checkHost.ipIntel("1.1.1.1");
+System.out.println(intel.at("/data/bgp/as_name").asText());   // Cloudflare, Inc.
+System.out.println(intel.at("/data/open_ports/0/port").asInt());
+```
+
+Honeypot passwords are never returned in cleartext — entries expose only `password_captured` (bool) and `password_len`.
+
+#### ASN Profile
+Prefix counts, announced IP totals, peers / providers / customers, IXP memberships, RPKI coverage, GeoIP footprint and hosted-domain summaries. Accepts `"13335"`, `"AS13335"` or the `int` overload.
+```java
+JsonNode intel = checkHost.asnIntel("AS13335");
+System.out.println(intel.at("/data/prefix_count").asInt());
+System.out.println(intel.at("/data/rpki_coverage_pct").asDouble());
+```
+
+#### Prefix, Domain and Certificate
+```java
+JsonNode prefix = checkHost.prefixIntel("1.1.1.0", 24);
+JsonNode domain = checkHost.domainIntel("check-host.cc");
+JsonNode cert   = checkHost.certIntel("3a1b8f0c…9f90");  // 64-char hex fingerprint
+
+System.out.println(prefix.path("cidr").asText());
+System.out.println(domain.at("/data/subdomains"));
+System.out.println(cert.at("/data/served_by"));
+```
+
+#### Port and Software Exposure
+```java
+JsonNode port = checkHost.portIntel(443);
+System.out.println(port.path("well_known").asText() + " " + port.at("/data/open_ips").asLong());
+
+JsonNode nginx  = checkHost.softwareIntel("nginx");            // all versions
+JsonNode pinned = checkHost.softwareIntel("nginx", "1.24.0");  // one version
+```
+
+---
+
+### Fullscan
+
+A deep, on-demand multi-stage scan (ports + banners + TLS + DNS + threat-intel) of an IP, CIDR, domain or ASN. Asynchronous: submit, poll, then read the results. Budget minutes, not seconds.
+
+```java
+JsonNode job = checkHost.fullscan("check-host.cc", CheckHost.SCOPE_DEEP);
+String uuid = job.path("uuid").asText();
+System.out.println(uuid + " " + job.path("status").asText());   // ... pending
+
+// Block until the job reaches a terminal status (complete/partial/failed)
+JsonNode finished = checkHost.waitForFullscan(uuid, 5_000L, 300_000L);
+System.out.printf("%s %d/%d%n",
+        finished.path("status").asText(),
+        finished.path("subjobs_done").asInt(),
+        finished.path("subjobs_total").asInt());
+
+JsonNode results = checkHost.fullscanResults(uuid);
+for (JsonNode entry : results.at("/data/open_ports")) {
+    System.out.println(entry.path("port").asInt() + " " + entry.path("service").asText());
+}
+```
+
+Scopes: `CheckHost.SCOPE_BASIC` (top-100 ports + banner), `CheckHost.SCOPE_DEEP` (default — full port range, TLS, body and threat-intel), `CheckHost.SCOPE_FULL` (deep plus subdomain enumeration; domains only). Passing `null` selects `deep`.
+
+Anonymous CIDR submissions are capped at `/24` (v4) and `/120` (v6); an API token raises that to `/20` and `/112`.
+
+Before dispatching a scan, check whether a recent one already exists:
+```java
+JsonNode scans = checkHost.recentScans("check-host.cc");
+for (JsonNode prior : scans.path("recent_scans")) {
+    if (CheckHost.isFullscanFinished(prior)) {
+        JsonNode results = checkHost.fullscanResults(prior.path("uuid").asText());
+        break;
+    }
+}
+```
+
+`fullscanStatus(uuid)` returns the job row directly (the `job` envelope is unwrapped for you).
+
+---
+
+## API surface
+
+| Method | Endpoint |
+|---|---|
+| `myip()` | `GET /myip` |
+| `myinfo()` | `GET /myinfo` |
+| `locations()` | `GET /locations` |
+| `info(target)` | `POST /info` |
+| `whois(target)` | `POST /whois` |
+| `ping(target[, options])` | `POST /ping` |
+| `dns(target[, options])` | `POST /dns` |
+| `tcp(target, port[, options])` | `POST /tcp` |
+| `udp(target, port[, options])` | `POST /udp` |
+| `http(target[, options])` | `POST /http` |
+| `mtr(target[, options])` | `POST /mtr` |
+| `report(uuid)` | `GET /report/{uuid}` |
+| `ogImage(uuid)` | `GET /report/{uuid}/og-image` |
+| `countryMap(uuid[, format, resolution])` | `GET /report/{uuid}/country-map` |
+| `ipIntel(ip)` | `GET /ip/{ip}` |
+| `asnIntel(asn)` | `GET /as/{asn}` |
+| `prefixIntel(net, mask)` | `GET /prefix/{net}/{mask}` |
+| `domainIntel(domain)` | `GET /domain/{domain}` |
+| `certIntel(sha256)` | `GET /cert/{sha256}` |
+| `portIntel(port)` | `GET /port/{port}` |
+| `softwareIntel(name[, version])` | `GET /software/{name}[/{version}]` |
+| `recentScans(target)` | `GET /scan/{target}` |
+| `fullscan(target[, scope])` | `POST /fullscan` |
+| `fullscanStatus(uuid)` | `GET /fullscan/{uuid}` |
+| `fullscanResults(uuid)` | `GET /fullscan/{uuid}/results` |
+| `waitForFullscan(uuid[, interval, maxWait])` | polls `GET /fullscan/{uuid}` |
+
+## Development
+
+```bash
+mvn test                                              # offline unit tests, no network
+mvn test -Dtest.excludedGroups= -Dtest.groups=live    # live smoke tests
 ```
 
 ## License

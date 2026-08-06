@@ -12,8 +12,10 @@ import java.util.List;
 public class Example {
 
         public static void main(String[] args) {
-                // Initialize the client. The API Key is optional.
-                // Without an API key, standard public rate limits apply.
+                // Initialize the client. The API token is optional; it is
+                // sent as an Authorization: Bearer header, never in the URL
+                // or the request body.
+                // CheckHost checkHost = new CheckHost("YOUR_API_TOKEN_UUID");
                 CheckHost checkHost = new CheckHost();
 
                 // Note: For public endpoints without an API key, you should wait
@@ -124,6 +126,35 @@ public class Example {
                         System.out.println(report.toPrettyString().substring(0,
                                         Math.min(report.toPrettyString().length(), 200))
                                         + "...\n(Report End truncated for preview)");
+
+                        System.out.println("\n=========================================");
+                        System.out.println("      4. NETWORK INTELLIGENCE            ");
+                        System.out.println("=========================================\n");
+
+                        // Passive lookups - nothing is dispatched to the nodes,
+                        // so these come back immediately.
+                        System.out.println("[->] IP intelligence for 1.1.1.1...");
+                        JsonNode ipIntel = checkHost.ipIntel("1.1.1.1");
+                        JsonNode bgp = ipIntel.path("data").path("bgp");
+                        System.out.printf("AS%s %s (%s), RPKI %s%n",
+                                        bgp.path("asn").asText("?"),
+                                        bgp.path("as_name").asText("?"),
+                                        bgp.path("prefix").asText("?"),
+                                        bgp.path("rpki_status").asText("?"));
+                        Thread.sleep(2000);
+
+                        System.out.println("\n[->] ASN intelligence for AS13335...");
+                        JsonNode asnIntel = checkHost.asnIntel("AS13335");
+                        System.out.println("Name: " + asnIntel.path("as_name").asText("?")
+                                        + ", prefixes: "
+                                        + asnIntel.path("data").path("prefix_count").asText("?"));
+                        Thread.sleep(2000);
+
+                        System.out.println("\n[->] Port exposure for 443...");
+                        JsonNode portIntel = checkHost.portIntel(443);
+                        System.out.println(portIntel.path("well_known").asText("?") + ": "
+                                        + portIntel.path("data").path("open_ips").asText("?")
+                                        + " open IPs worldwide");
 
                         System.out.println("\n🎉 All library functions executed successfully!");
 

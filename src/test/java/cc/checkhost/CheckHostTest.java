@@ -3,34 +3,55 @@ package cc.checkhost;
 import cc.checkhost.models.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * Live smoke tests against the production API.
+ *
+ * <p>Tagged {@code live} and excluded from {@code mvn test} by default (see
+ * the surefire config in pom.xml). Run them with:
+ * {@code mvn test -Dtest.excludedGroups= -Dgroups=live}
+ *
+ * <p>The deterministic, offline suite is {@link CheckHostUnitTest}.
+ */
+@Tag("live")
 public class CheckHostTest {
 
     private CheckHost checkHost;
 
+    /**
+     * CI populates CHECK_HOST_API_TOKEN via a masked GitLab variable so
+     * pipelines pick up the higher per-token rate limit. Locally, and when
+     * the env var is empty, we keep the anonymous tier.
+     */
+    private static String token() {
+        String t = System.getenv("CHECK_HOST_API_TOKEN");
+        if (t != null && !t.isEmpty()) {
+            return t;
+        }
+        return System.getenv("CHECK_HOST_API_KEY");
+    }
+
     @BeforeEach
     public void setUp() {
-        // CI populates CHECK_HOST_API_KEY via a masked GitLab variable so
-        // pipelines pick up the higher per-key rate limit. Locally and
-        // when the env var is empty we keep the anonymous tier.
-        String apiKey = System.getenv("CHECK_HOST_API_KEY");
-        checkHost = (apiKey != null && !apiKey.isEmpty())
-                ? new CheckHost(apiKey)
+        String tok = token();
+        checkHost = (tok != null && !tok.isEmpty())
+                ? new CheckHost(tok)
                 : new CheckHost();
     }
 
     private void sleepToAvoidRateLimit() {
         try {
-            // With CHECK_HOST_API_KEY the per-IP bucket is generous, so a
+            // With a token the per-IP bucket is generous, so a
             // tiny pause keeps log ordering deterministic without
             // wasting CI minutes. Anonymous tier still needs ~5s.
-            String key = System.getenv("CHECK_HOST_API_KEY");
-            long ms = (key == null || key.isEmpty()) ? 5000L : 300L;
+            String tok = token();
+            long ms = (tok == null || tok.isEmpty()) ? 5000L : 300L;
             Thread.sleep(ms);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -149,6 +170,78 @@ public class CheckHostTest {
         CheckCreated mtr = checkHost.mtr("1.1.1.1", options);
         assertNotNull(mtr.uuid());
         System.out.println("testMtr UUID: " + mtr.uuid());
+        sleepToAvoidRateLimit();
+    }
+
+    // --- Network Intelligence ---
+
+    @Test
+    public void testMyInfo() {
+        MinResponseINFO info = checkHost.myinfo();
+        assertNotNull(info.ip());
+        System.out.println("testMyInfo: " + info.ip() + " (" + info.country() + ")");
+        sleepToAvoidRateLimit();
+    }
+
+    @Test
+    public void testIpIntel() {
+        JsonNode intel = checkHost.ipIntel("1.1.1.1");
+        assertTrue(intel.path("success").asBoolean());
+        assertEquals("1.1.1.1", intel.path("ip").asText());
+        assertTrue(intel.path("data").isObject());
+        System.out.println("testIpIntel family: " + intel.path("family").asText());
+        sleepToAvoidRateLimit();
+    }
+
+    @Test
+    public void testAsnIntel() {
+        JsonNode intel = checkHost.asnIntel("AS13335");
+        assertTrue(intel.path("success").asBoolean());
+        assertEquals(13335, intel.path("asn").asInt());
+        System.out.println("testAsnIntel: " + intel.path("as_name").asText());
+        sleepToAvoidRateLimit();
+    }
+
+    @Test
+    public void testPrefixIntel() {
+        JsonNode intel = checkHost.prefixIntel("1.1.1.0", 24);
+        assertTrue(intel.path("success").asBoolean());
+        assertEquals("1.1.1.0/24", intel.path("cidr").asText());
+        System.out.println("testPrefixIntel: " + intel.path("cidr").asText());
+        sleepToAvoidRateLimit();
+    }
+
+    @Test
+    public void testDomainIntel() {
+        JsonNode intel = checkHost.domainIntel("check-host.cc");
+        assertTrue(intel.path("success").asBoolean());
+        assertEquals("check-host.cc", intel.path("domain").asText());
+        sleepToAvoidRateLimit();
+    }
+
+    @Test
+    public void testPortIntel() {
+        JsonNode intel = checkHost.portIntel(443);
+        assertTrue(intel.path("success").asBoolean());
+        assertEquals(443, intel.path("port").asInt());
+        System.out.println("testPortIntel well-known: " + intel.path("well_known").asText());
+        sleepToAvoidRateLimit();
+    }
+
+    @Test
+    public void testSoftwareIntel() {
+        JsonNode intel = checkHost.softwareIntel("nginx");
+        assertTrue(intel.path("success").asBoolean());
+        assertEquals("nginx", intel.path("name").asText());
+        sleepToAvoidRateLimit();
+    }
+
+    @Test
+    public void testRecentScans() {
+        JsonNode scans = checkHost.recentScans("check-host.cc");
+        assertTrue(scans.path("success").asBoolean());
+        assertTrue(scans.path("recent_scans").isArray());
+        System.out.println("testRecentScans: " + scans.path("recent_scans").size() + " job(s)");
         sleepToAvoidRateLimit();
     }
 }
