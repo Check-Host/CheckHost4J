@@ -19,15 +19,34 @@ Seamlessly integrate global network diagnostics into your backend. Perform remot
 
 ## Installation
 
-Add the following dependency to your `pom.xml`:
+Releases are published as tags on this repository and served by
+[JitPack](https://jitpack.io), so no extra credentials or repositories are
+needed beyond the JitPack one.
 
 ```xml
+<repositories>
+    <repository>
+        <id>jitpack.io</id>
+        <url>https://jitpack.io</url>
+    </repository>
+</repositories>
+
 <dependency>
-    <groupId>cc.checkhost</groupId>
-    <artifactId>checkhost4j</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <groupId>com.github.Check-Host</groupId>
+    <artifactId>CheckHost4J</artifactId>
+    <version>v1.1.0</version>
 </dependency>
 ```
+
+Gradle:
+
+```groovy
+repositories { maven { url 'https://jitpack.io' } }
+dependencies { implementation 'com.github.Check-Host:CheckHost4J:v1.1.0' }
+```
+
+Building from source works too — `mvn package` produces
+`target/checkhost4j-1.1.0.jar`. Requires **JDK 17+**.
 
 ## Quickstart
 
