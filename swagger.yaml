@@ -14,23 +14,15 @@ info:
 
     ## Network Intelligence
 
-    Beyond live checks, the API exposes our passive intelligence dataset as JSON. `GET /ip`, `/as`, `/prefix`, `/domain`, `/cert`, `/port`, `/software` and `/scan` return the same data that powers the entity pages — BGP/ASN attribution, GeoIP, TLS certificates, open ports, tech-stack, origin-leak candidates and honeypot activity. `POST /fullscan` dispatches a deep, on-demand multi-stage scan and `GET /fullscan/{uuid}/results` returns its aggregated findings. All of it is free: anonymous with per-IP limits, a token lifts them.
+    Beyond live checks, the API exposes our passive intelligence dataset as JSON. `GET /ip`, `/as`, `/prefix`, `/domain`, `/cert`, `/port`, `/software` and `/scan` return the same data that powers the entity pages — BGP/ASN attribution, GeoIP, TLS certificates, open ports, tech-stack, origin-leak candidates and honeypot activity. `POST /fullscan` dispatches a deep, on-demand multi-stage scan and `GET /fullscan/{uuid}/results` returns its aggregated findings. All of it is free: anonymous with per-IP limits, an API key lifts them.
 
     ## Authentication
 
-    Anonymous use is permitted with conservative per-IP and per-target rate limits. To raise those limits and gain a per-token monthly quota, send your API token (UUID) in the `Authorization` header:
-
-    ```
-    Authorization: Bearer 550e8400-e29b-41d4-a716-446655440000
-    ```
-
-    The header works for GET and POST alike and keeps the token out of URLs, logs and referrers. `X-API-Key: <token>` is accepted as an alias for clients that cannot set `Authorization`.
-
-    Authentication is optional throughout — omit the header for anonymous access.
+    Anonymous use is permitted with conservative per-IP and per-target rate limits. To raise those limits and gain a per-key monthly quota, send your API key (UUID) as an `Authorization: Bearer <key>` header — the default, working for GET and POST alike. `X-API-Key` and a POST-body `apikey` field are also accepted (never the query string). All auth is optional; anonymous requests may omit the key entirely.
 
     ## Rate limits
 
-    Limits are applied per-IP, per-token, and per-target globally to prevent abuse. Exceeding any bucket returns `429`. Live-mode checks (`repeatchecks > 9`) consume a smaller, separate budget.
+    Limits are applied per-IP, per-API-key, and per-target globally to prevent abuse. Exceeding any bucket returns `429`. Live-mode checks (`repeatchecks > 9`) consume a smaller, separate budget.
 
     ## Official SDKs
 
@@ -47,11 +39,9 @@ info:
     ## Quick example — polling pattern
 
     ```bash
-    # 1. Dispatch a check, capture the UUID.
-    #    Drop the Authorization line to run anonymously.
+    # 1. Dispatch a check, capture the UUID
     UUID=$(curl -s -X POST https://api.check-host.cc/ping \
       -H 'Content-Type: application/json' \
-      -H "Authorization: Bearer $CHECK_HOST_TOKEN" \
       -d '{"target":"check-host.cc","region":["DE"]}' | jq -r .uuid)
 
     # 2. Poll the report until every node has reported
@@ -107,7 +97,7 @@ tags:
       Machine-readable network-intelligence lookups — the JSON twin of the /ip, /as,
       /domain, /cert … entity pages. Aggregated from our CT-log mirror, world scans,
       BGP/RIR/PeeringDB/RPKI mirrors and honeypot sensors. Open to guests with a
-      per-IP rate limit; an API token lifts the limits.
+      per-IP rate limit; an API key lifts the limits.
   - name: Fullscan
     description: >-
       Dispatch a deep, multi-stage scan (ports + banners + TLS + DNS + threat-intel)
@@ -169,6 +159,57 @@ paths:
                   captcha_url: { type: string, format: uri, nullable: true }
         '500': { $ref: '#/components/responses/ServerError' }
 
+  /usage:
+    get:
+      tags: [Utilities]
+      operationId: getUsage
+      summary: Your rate-limit usage vs. limits
+      description: >
+        Your current rate-limit usage against your limits, per window. With an API key
+        (`Authorization: Bearer`) it reports the key's 10s / minute / hour / day / month limits,
+        used and remaining, plus `last_used_at`. With no key it reports the anonymous per-IP
+        limits (10s / minute / hour). Read-only — checking never counts against your quota — and
+        it sits outside the main rate limiter so it works even while you are throttled.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:      { type: boolean }
+                  mode:         { type: string, enum: [apikey, ip] }
+                  ip:           { type: string, description: "Present in ip mode." }
+                  limits:       { type: object, additionalProperties: { type: integer } }
+                  used:         { type: object, additionalProperties: { type: integer } }
+                  remaining:    { type: object, additionalProperties: { type: integer } }
+                  last_used_at: { type: string, nullable: true, description: "apikey mode only." }
+                  note:         { type: string, description: "ip mode only." }
+              examples:
+                apikey:
+                  summary: With API key
+                  value:
+                    success: true
+                    mode: apikey
+                    limits:    { "10s": 10, min: 120, hour: 2000, day: 20000, month: 200000 }
+                    used:      { "10s": 1, min: 14, hour: 230, day: 1120, month: 8400 }
+                    remaining: { "10s": 9, min: 106, hour: 1770, day: 18880, month: 191600 }
+                    last_used_at: "2026-07-28 21:58:18"
+                ip:
+                  summary: Anonymous (per-IP)
+                  value:
+                    success: true
+                    mode: ip
+                    ip: "203.0.113.55"
+                    limits:    { "10s": 6, min: 30, hour: 250 }
+                    used:      { "10s": 0, min: 4, hour: 18 }
+                    remaining: { "10s": 6, min: 26, hour: 232 }
+                    note: "Anonymous per-IP limits. Live-mode checks use lower caps; global per-target limits also apply. Send an API key for higher limits."
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
   /locations:
     get:
       tags: [Utilities]
@@ -205,7 +246,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/TargetRequest' }
-            example: { target:"check-host.cc" }
+            example: { apikey: null, target: "check-host.cc" }
       responses:
         '200':
           description: OK
@@ -260,7 +301,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/TargetRequest' }
-            example: { target:"check-host.cc" }
+            example: { apikey: null, target: "check-host.cc" }
       responses:
         '200':
           description: OK — RDAP record. Shape varies by registry; the example below is from Verisign for a `.cc` domain.
@@ -309,7 +350,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/MonitoringRequest' }
-            example: { target:"check-host.cc", region: ["DE"], repeatchecks: 0 }
+            example: { apikey: null, target: "check-host.cc", region: ["DE"], repeatchecks: 0 }
       responses:
         '200':
           description: Check dispatched.
@@ -335,7 +376,7 @@ paths:
                 port: null
                 query: null
                 payload: null
-        '401': { $ref: '#/components/responses/InvalidToken' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -347,6 +388,7 @@ paths:
       summary: ICMP Ping (GET)
       parameters:
         - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
+        - { name: timeout, in: query, required: false, schema: { type: integer, minimum: 100, maximum: 30000, default: 1000 }, description: "Per-check timeout in milliseconds. Applied at whole-second granularity, so values below 1000 behave as 1000. A value below 100 is read as seconds and converted, so clients written against the older libraries keep working." }
       responses:
         '200':
           description: Check dispatched.
@@ -356,7 +398,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CheckCreated' }
-        '401': { $ref: '#/components/responses/InvalidToken' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -381,7 +423,7 @@ paths:
                   required: [port]
                   properties:
                     port: { type: integer, minimum: 1, maximum: 65535, example: 443 }
-            example: { target:"check-host.cc", port: 443, region: ["DE"] }
+            example: { apikey: null, target: "check-host.cc", port: 443, region: ["DE"] }
       responses:
         '200':
           description: Check dispatched.
@@ -407,7 +449,7 @@ paths:
                 port: 443
                 query: null
                 payload: null
-        '401': { $ref: '#/components/responses/InvalidToken' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -420,6 +462,7 @@ paths:
       parameters:
         - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
         - { name: port,   in: path, required: true, schema: { type: integer, minimum: 0, maximum: 65535 }, example: 443 }
+        - { name: timeout, in: query, required: false, schema: { type: integer, minimum: 100, maximum: 30000, default: 1000 }, description: "Per-check timeout in milliseconds. A value below 100 is read as seconds and converted, so clients written against the older libraries keep working." }
       responses:
         '200':
           description: Check dispatched.
@@ -429,7 +472,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CheckCreated' }
-        '401': { $ref: '#/components/responses/InvalidToken' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -457,7 +500,7 @@ paths:
                   properties:
                     port:    { type: integer, minimum: 1, maximum: 65535, example: 53 }
                     payload: { type: string, nullable: true, maxLength: 2048, example: "0x241a010000010000000000000377777706676f6f676c6503636f6d0000010001" }
-            example: { target:"1.1.1.1", port: 53, region: ["DE"] }
+            example: { apikey: null, target: "1.1.1.1", port: 53, region: ["DE"] }
       responses:
         '200':
           description: Check dispatched.
@@ -483,7 +526,7 @@ paths:
                 port: 53
                 query: null
                 payload: "0x241a010000010000000000000377777706676f6f676c6503636f6d0000010001"
-        '401': { $ref: '#/components/responses/InvalidToken' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -497,6 +540,7 @@ paths:
         - { name: port,    in: query, required: true,  schema: { type: integer, minimum: 1, maximum: 65535 }, example: 53 }
         - { name: region,  in: query, required: false, schema: { type: array, items: { type: string } } }
         - { name: payload, in: query, required: false, schema: { type: string }, description: "Hex (0x…) or printable ASCII, max 2048 bytes." }
+        - { name: timeout, in: query, required: false, schema: { type: integer, minimum: 100, maximum: 30000, default: 2000 }, description: "Per-check timeout in milliseconds. A value below 100 is read as seconds and converted, so clients written against the older libraries keep working." }
       responses:
         '200':
           description: Check dispatched.
@@ -506,7 +550,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CheckCreated' }
-        '401': { $ref: '#/components/responses/InvalidToken' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -525,7 +569,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/MonitoringRequest' }
-            example: { target:"https://check-host.cc", region: ["DE"] }
+            example: { apikey: null, target: "https://check-host.cc", region: ["DE"] }
       responses:
         '200':
           description: Check dispatched.
@@ -551,7 +595,7 @@ paths:
                 port: null
                 query: null
                 payload: null
-        '401': { $ref: '#/components/responses/InvalidToken' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -564,6 +608,7 @@ paths:
       description: GET shortcut for a bare host or scheme-prefixed origin (`https` assumed when no scheme is given). Use POST `/http` for a full URL with a path, a custom port, or region targeting.
       parameters:
         - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
+        - { name: timeout, in: query, required: false, schema: { type: integer, minimum: 100, maximum: 30000, default: 15000 }, description: "Per-check timeout in milliseconds. A value below 100 is read as seconds and converted, so clients written against the older libraries keep working." }
       responses:
         '200':
           description: Check dispatched.
@@ -573,7 +618,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CheckCreated' }
-        '401': { $ref: '#/components/responses/InvalidToken' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -589,7 +634,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/DNSTargetRequest' }
-            example: { target:"check-host.cc", querymethod: "A", region: ["DE"] }
+            example: { apikey: null, target: "check-host.cc", querymethod: "A", region: ["DE"] }
       responses:
         '200':
           description: Check dispatched.
@@ -632,6 +677,7 @@ paths:
       parameters:
         - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
         - { name: method, in: path, required: true, schema: { type: string, default: "A", enum: [A/AAAA, A, AAAA, NS, MD, MF, CNAME, SOA, MB, MG, MR, "NULL", WKS, PTR, HINFO, MINFO, MX, TXT, SRV, EDNS, SPF, AXFR, MAILB, MAILA, ANY, CAA, DNSKEY] }, example: "A" }
+        - { name: timeout, in: query, required: false, schema: { type: integer, minimum: 100, maximum: 30000, default: 5000 }, description: "Per-check timeout in milliseconds. A value below 100 is read as seconds and converted, so clients written against the older libraries keep working." }
       responses:
         '200':
           description: Check dispatched.
@@ -641,7 +687,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CheckCreated' }
-        '401': { $ref: '#/components/responses/InvalidToken' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -660,7 +706,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/MTRMonitoringRequest' }
-            example: { target:"check-host.cc", repeatchecks: 5, region: ["DE"] }
+            example: { apikey: null, target: "check-host.cc", repeatchecks: 5, region: ["DE"] }
       responses:
         '200':
           description: Check dispatched.
@@ -686,7 +732,7 @@ paths:
                 port: null
                 query: null
                 payload: null
-        '401': { $ref: '#/components/responses/InvalidToken' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -698,6 +744,7 @@ paths:
       summary: MTR (GET)
       parameters:
         - { name: target, in: path, required: true, schema: { type: string }, example: "check-host.cc" }
+        - { name: timeout, in: query, required: false, schema: { type: integer, minimum: 100, maximum: 30000, default: 1000 }, description: "Per-check timeout in milliseconds. Runtime budget; nodes apply it in whole seconds. A value below 100 is read as seconds and converted, so clients written against the older libraries keep working." }
       responses:
         '200':
           description: Check dispatched.
@@ -707,7 +754,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CheckCreated' }
-        '401': { $ref: '#/components/responses/InvalidToken' }
+        '401': { $ref: '#/components/responses/InvalidApiKey' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
@@ -1086,13 +1133,13 @@ paths:
       description: |
         Dispatches a deep, multi-stage scan of a target (IP, CIDR, domain or ASN). The manager classifies the target, fans out typed sub-jobs to dedicated workers (resolve / portscan / banner / body-fetch / threat-intel) and aggregates the results. Returns immediately with `status=pending` — poll `GET /fullscan/{uuid}` for progress and `GET /fullscan/{uuid}/results` for data.
 
-        Anonymous CIDR submissions are capped at `/24` (v4) / `/120` (v6); an API token raises that to `/20` / `/112`.
+        Anonymous CIDR submissions are capped at `/24` (v4) / `/120` (v6); an API key raises that to `/20` / `/112`.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/FullscanSubmitRequest' }
-            example: { target:"check-host.cc", scope: "deep" }
+            example: { apikey: null, target: "check-host.cc", scope: "deep" }
       responses:
         '202':
           description: Accepted — job queued.
@@ -1189,12 +1236,12 @@ components:
       scheme: bearer
       bearerFormat: UUID
       description: >
-        Send your API token (UUID) as `Authorization: Bearer <token>`. It works
-        for every endpoint, GET and POST alike, and keeps the token out of URLs,
-        access logs and referrer headers. `X-API-Key: <token>` is accepted as an
-        alias for clients that cannot set `Authorization`. Authentication is
-        optional: anonymous use is allowed under conservative rate limits, and a
-        token simply lifts them.
+        Pass your API key (UUID) as `Authorization: Bearer <key>`. This is the
+        default and works for every endpoint, GET and POST alike, without ever
+        putting the key in the URL. `X-API-Key: <key>` is also accepted, and for
+        backward compatibility the key may be sent as an `apikey` field in a POST
+        body — but never in the query string. All auth is optional: anonymous use
+        is allowed under conservative rate limits, and a key simply lifts them.
 
   headers:
     X-Ratelimit-Limit:
@@ -1205,12 +1252,12 @@ components:
       schema: { type: integer, example: 52 }
 
   responses:
-    InvalidToken:
-      description: The token in `Authorization` is not a valid UUID, is unknown, or is disabled. Anonymous requests never return this — omit the header entirely instead.
+    InvalidApiKey:
+      description: The supplied `apikey` is not a valid UUID, is unknown, or is disabled. Anonymous use does not return this — `apikey` may simply be `null`.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
-          example: { success: false, error: "Invalid or inactive API token." }
+          example: { success: false, error: "Invalid or inactive API key." }
     BadInput:
       description: Bad request (missing/invalid input).
       content:
@@ -1224,7 +1271,7 @@ components:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
           example: { status: 422, error: "The target field is required.", success: false }
     RateLimited:
-      description: Rate limit reached. Wait, or send an API token for a higher-tier bucket.
+      description: Rate limit reached. Wait or supply a higher-tier API key.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -1250,12 +1297,14 @@ components:
       type: object
       required: [target]
       properties:
+        apikey: { type: string, format: uuid, nullable: true, description: "Your API key (UUID). Leave null for anonymous use." }
         target: { type: string, example: "check-host.cc", description: "Hostname or IP address." }
 
     DNSTargetRequest:
       type: object
       required: [target]
       properties:
+        apikey:      { type: string, format: uuid, nullable: true }
         target:      { type: string, example: "check-host.cc" }
         querymethod: { type: string, default: "A/AAAA", enum: [A/AAAA, A, AAAA, NS, MD, MF, CNAME, SOA, MB, MG, MR, "NULL", WKS, PTR, HINFO, MINFO, MX, TXT, SRV, EDNS, SPF, AXFR, MAILB, MAILA, ANY, CAA, DNSKEY] }
         region:      { type: array, items: { type: string }, example: ["DE"] }
@@ -1264,8 +1313,10 @@ components:
       type: object
       required: [target]
       properties:
+        apikey:       { type: string, format: uuid, nullable: true }
         target:       { type: string, example: "check-host.cc" }
         repeatchecks: { type: integer, minimum: 0, maximum: 120, default: 0, description: "0 = single shot. ≥10 enables Live Mode (continuous probing for ~repeatchecks seconds)." }
+        timeout:      { type: integer, minimum: 100, maximum: 30000, description: "Per-check timeout in milliseconds. Optional — omit to use the per-method default: ping 1000, tcp 1000, udp 2000, dns 5000, http 15000 (1000 in Live Mode). Values outside 100–30000 are rejected with 422. Note: ICMP ping applies the value at whole-second granularity, so anything below 1000 behaves as 1000." }
         region:
           type: array
           items: { type: string, example: "DE" }
@@ -1285,10 +1336,12 @@ components:
       type: object
       required: [target]
       properties:
+        apikey:         { type: string, format: uuid, nullable: true }
         target:         { type: string, example: "check-host.cc" }
         repeatchecks:   { type: integer, minimum: 3, maximum: 30, default: 5, description: "Packets per hop." }
         forceIPversion: { type: integer, enum: [4, 6], nullable: true, description: "Force IPv4 or IPv6. Not all nodes support IPv6." }
         forceProtocol:  { type: string, enum: [udp, tcp], nullable: true, description: "Force UDP or TCP. Default is ICMP. Useful when ICMP is filtered." }
+        timeout:        { type: integer, minimum: 100, maximum: 30000, default: 1000, description: "Runtime budget for the trace, in milliseconds for consistency with the other checks. Nodes apply it in whole seconds, so values below 1000 behave as 1000." }
         region:         { type: array, items: { type: string }, example: ["DE"] }
 
     # ─── Responses ──────────────────────────────────────────────────────
@@ -1626,6 +1679,7 @@ components:
       type: object
       required: [target]
       properties:
+        apikey: { type: string, format: uuid, nullable: true, description: "Optional API key (UUID). Required for custom probe recipes and larger CIDR ranges." }
         target: { type: string, example: "check-host.cc", description: "IPv4/IPv6 address, CIDR block, domain or AS number." }
         scope:  { type: string, enum: [basic, deep, full], default: deep, description: "`basic` = top-100 ports + banner; `deep` = full port range + TLS + body + threat-intel; `full` = deep + subdomain enumeration (domains only)." }
 

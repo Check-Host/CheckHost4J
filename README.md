@@ -102,7 +102,7 @@ This library supports both minimal invocations and detailed, options-rich reques
 ### Common Options Used in Examples
 - `region`: List of Node names (e.g., `List.of("us1.node.check-host.cc")`) or ISO Country Codes (e.g., `List.of("DE", "NL")`) or Continents (e.g., `List.of("EU")`).
 - `repeatchecks`: Number of repeated probes to perform per node for higher accuracy (Live Check).
-- `timeout`: Connection timeout threshold in seconds.
+- `timeout`: Per-check timeout in **milliseconds** (100–30000). Optional; each check type has its own default (ping/tcp 1000, udp 2000, dns 5000, http 15000, mtr 1000). A value below 100 is read as seconds and converted, so older code that passed `timeout: 15` still works — but new code should pass milliseconds.
 
 ---
 
